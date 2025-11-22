@@ -1,0 +1,8 @@
+python-telegram-bot[job-queue]
+google-generativeai
+requests
+beautifulsoup4
+python-dotenv
+pydub
+yt-dlp
+groq
