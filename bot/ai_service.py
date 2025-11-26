@@ -11,32 +11,37 @@ client = None
 if GROQ_API_KEY:
     client = Groq(api_key=GROQ_API_KEY)
 
-def get_gemini_response(prompt, image_parts=None):
+def _build_history_messages(history):
+    messages = []
+    if not history:
+        return messages
+
+    for item in history:
+        role = item.get("role")
+        content = item.get("content")
+        if role and content:
+            messages.append({"role": role, "content": content})
+    return messages
+
+def get_gemini_response(prompt, image_parts=None, history=None):
     """
-    Get response from Groq (Llama 3).
+    Get response from Groq (Llama 3) with optional conversation history.
     Kept function name 'get_gemini_response' for compatibility, but uses Groq.
     """
     if not client:
         return "⚠️ Groq API Key is missing. Please configure it in .env."
 
     try:
-        messages = []
-        
+        messages = _build_history_messages(history)
+
         # Handle Image (Multimodal)
         if image_parts:
-            # image_parts is expected to be a list of PIL Images or bytes.
-            # Groq Llama 3.2 Vision expects base64 data URI.
-            # We need to convert the input to base64.
-            
-            # Assuming image_parts[0] is the image data (bytes)
             image_data = image_parts[0]
-            
-            # If it's bytes, encode it
+
             if isinstance(image_data, bytes):
                 base64_image = base64.b64encode(image_data).decode('utf-8')
                 image_url = f"data:image/jpeg;base64,{base64_image}"
             else:
-                # If it's a PIL image, convert to bytes first
                 from io import BytesIO
                 buffered = BytesIO()
                 image_data.save(buffered, format="JPEG")
@@ -55,14 +60,13 @@ def get_gemini_response(prompt, image_parts=None):
                     }
                 ]
             })
-            model = "llama-3.2-11b-vision-preview" # Vision model
+            model = "llama-3.2-11b-vision-preview"  # Vision model
         else:
-            # Text only
             messages.append({
                 "role": "user",
                 "content": prompt
             })
-            model = "llama-3.3-70b-versatile" # Updated to latest supported model
+            model = "llama-3.3-70b-versatile"  # Updated to latest supported model
 
         completion = client.chat.completions.create(
             model=model,

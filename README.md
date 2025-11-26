@@ -1,6 +1,6 @@
 # 🤖 RaizitoBot
 
-Bot do Telegram com integração de IA (Google Gemini) que oferece conversação inteligente, gerenciamento de tarefas, busca na web e transcrição de áudio.
+Bot do Telegram com integração de IA (Google Gemini) que oferece conversação inteligente, gerenciamento de tarefas, busca na web e transcrição de áudio, agora com memória de contexto e acesso a Gmail, Drive, Calendar e Docs via Google Workspace.
 
 ## ✨ Funcionalidades
 
@@ -9,6 +9,8 @@ Bot do Telegram com integração de IA (Google Gemini) que oferece conversação
 - 🔍 **Busca na Web**: Pesquise informações diretamente do Telegram
 - 🎙️ **Transcrição de Áudio**: Converta mensagens de voz em texto (Groq Whisper)
 - 🖼️ **Análise de Imagens**: Envie fotos e receba análises da IA
+- 🧠 **Memória de Conversa**: Contexto das últimas interações para respostas mais coerentes
+- 📧 **Integração Google**: Leia e-mails, arquivos do Drive, eventos do Calendar e Docs
 - 📊 **Status do App**: Monitore o status do bot
 
 ## 🚀 Deploy em Produção
@@ -50,6 +52,9 @@ Para colocar o bot em produção, consulte o **[Guia de Deploy](DEPLOY.md)** com
    - `TELEGRAM_TOKEN`: Token do [@BotFather](https://t.me/BotFather)
    - `GEMINI_API_KEY`: Key do [Google AI Studio](https://makersuite.google.com/app/apikey)
    - `GROQ_API_KEY`: Key do [Groq Console](https://console.groq.com)
+   - `GOOGLE_SEARCH_API_KEY` e `GOOGLE_SEARCH_CX`: Chaves do Google Custom Search
+   - `GOOGLE_SERVICE_ACCOUNT_FILE`: JSON do service account com acesso a Gmail/Drive/Calendar/Docs
+   - `GOOGLE_DELEGATED_USER`: (opcional) usuário a ser impersonado ao usar o service account
 
 4. **Execute o bot**
    ```bash
@@ -66,10 +71,14 @@ Para colocar o bot em produção, consulte o **[Guia de Deploy](DEPLOY.md)** com
 | `/list` | Lista todas as tarefas pendentes |
 | `/done <id>` | Marca uma tarefa como concluída |
 | `/search <query>` | Busca informações na web |
+| `/gmail [query]` | Lista e-mails recentes (com filtro opcional) |
+| `/drive` | Lista arquivos recentes do Drive |
+| `/calendar` | Mostra próximos eventos |
+| `/docs <documento>` | Mostra título e prévia de um Google Docs |
 | `/app_status` | Verifica o status do bot |
 
 Além dos comandos, você pode:
-- 💬 Enviar mensagens de texto para conversar com a IA
+- 💬 Enviar mensagens de texto para conversar com a IA (com contexto das últimas interações)
 - 🖼️ Enviar fotos para análise
 - 🎙️ Enviar áudios/voice notes para transcrição
 
@@ -80,8 +89,9 @@ RaizitoBot/
 ├── bot/
 │   ├── __init__.py
 │   ├── ai_service.py          # Integração com Google Gemini
-│   ├── db.py                  # Gerenciamento do banco de dados
+│   ├── db.py                  # Gerenciamento do banco de dados e memória de conversas
 │   ├── external_integration.py # Integrações externas
+│   ├── google_services.py     # Integrações Gmail/Drive/Calendar/Docs
 │   ├── handlers.py            # Handlers do Telegram
 │   └── web_search.py          # Funcionalidade de busca web
 ├── main.py                    # Arquivo principal

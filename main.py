@@ -3,10 +3,11 @@ import logging
 from dotenv import load_dotenv
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 from bot.handlers import (
-    start_command, help_command, handle_message, 
+    start_command, help_command, handle_message,
     add_task_command, list_tasks_command, complete_task_command,
     search_command, app_status_command,
-    handle_photo, handle_audio
+    handle_photo, handle_audio,
+    gmail_command, drive_command, calendar_command, docs_command,
 )
 from bot.db import init_db
 
@@ -37,6 +38,10 @@ def main():
     app.add_handler(CommandHandler("list", list_tasks_command))
     app.add_handler(CommandHandler("done", complete_task_command))
     app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("gmail", gmail_command))
+    app.add_handler(CommandHandler("drive", drive_command))
+    app.add_handler(CommandHandler("calendar", calendar_command))
+    app.add_handler(CommandHandler("docs", docs_command))
     app.add_handler(CommandHandler("app_status", app_status_command))
 
     # Messages (Text) - Make sure this is last so it doesn't block commands if using filters.text
