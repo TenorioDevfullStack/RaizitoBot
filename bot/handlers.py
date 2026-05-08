@@ -1,4 +1,5 @@
 import os
+import tempfile
 from telegram import Update
 from telegram.ext import ContextTypes
 from bot.ai_service import get_gemini_response, analyze_image, transcribe_audio
@@ -77,7 +78,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_id = voice.file_id
     new_file = await context.bot.get_file(file_id)
 
-    file_path = f"voice_{file_id}.ogg"
+    file_path = os.path.join(tempfile.gettempdir(), f"voice_{file_id}.ogg")
     await new_file.download_to_drive(file_path)
 
     try:

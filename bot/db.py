@@ -2,7 +2,10 @@ import sqlite3
 import os
 from datetime import datetime
 
-DB_PATH = "bot_data.db"
+DB_PATH = os.getenv(
+    "DB_PATH",
+    "/tmp/bot_data.db" if os.getenv("VERCEL") else "bot_data.db",
+)
 
 def init_db():
     """Initialize the database with necessary tables."""
