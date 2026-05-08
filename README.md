@@ -7,7 +7,7 @@ Bot do Telegram com integração de IA (Google Gemini) que oferece conversação
 - 💬 **Conversação com IA**: Integração com Google Gemini para respostas inteligentes
 - 📝 **Gerenciamento de Tarefas**: Adicione, liste e complete tarefas
 - 🔍 **Busca na Web**: Pesquise informações diretamente do Telegram
-- 🎙️ **Transcrição de Áudio**: Converta mensagens de voz em texto (Groq Whisper)
+- 🎙️ **Transcrição de Áudio**: Converta mensagens de voz em texto com Gemini
 - 🖼️ **Análise de Imagens**: Envie fotos e receba análises da IA
 - 🧠 **Memória de Conversa**: Contexto das últimas interações para respostas mais coerentes
 - 📧 **Integração Google**: Leia e-mails, arquivos do Drive, eventos do Calendar e Docs
@@ -55,8 +55,8 @@ Para configurar as chaves de API necessárias (Google Search, Gmail, Drive, etc.
    
    Edite o arquivo `.env` com suas credenciais:
    - `TELEGRAM_TOKEN`: Token do [@BotFather](https://t.me/BotFather)
-   - `GEMINI_API_KEY`: Key do [Google AI Studio](https://makersuite.google.com/app/apikey)
-   - `GROQ_API_KEY`: Key do [Groq Console](https://console.groq.com)
+   - `GEMINI_API_KEY`: Key do [Google AI Studio](https://aistudio.google.com/)
+   - `GEMINI_MODEL`: Modelo Gemini opcional (padrão: `gemini-2.5-flash`)
    - `GOOGLE_SEARCH_API_KEY` e `GOOGLE_SEARCH_CX`: Chaves do Google Custom Search
    - `GOOGLE_SERVICE_ACCOUNT_FILE`: JSON do service account com acesso a Gmail/Drive/Calendar/Docs
    - `GOOGLE_DELEGATED_USER`: (opcional) usuário a ser impersonado ao usar o service account
