@@ -87,12 +87,20 @@ def _image_part(image_data):
     }
 
 
-def get_gemini_response(prompt, image_parts=None, history=None):
+def get_gemini_response(prompt, image_parts=None, history=None, system_context=None):
     """
     Get response from Gemini with optional conversation history and images.
     """
     contents = _build_history_contents(history)
-    parts = [{"text": prompt}]
+    user_prompt = prompt
+    if system_context:
+        user_prompt = (
+            f"{system_context}\n\n"
+            "Mensagem atual do usuario:\n"
+            f"{prompt}"
+        )
+
+    parts = [{"text": user_prompt}]
 
     if image_parts:
         parts.extend(_image_part(image_data) for image_data in image_parts)

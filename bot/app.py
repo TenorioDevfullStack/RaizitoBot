@@ -9,6 +9,7 @@ from bot.handlers import (
     search_command, app_status_command,
     handle_photo, handle_audio,
     gmail_command, drive_command, calendar_command, docs_command,
+    remember_command, memory_command, forget_command,
 )
 
 load_dotenv()
@@ -26,6 +27,9 @@ def build_application():
     app.add_handler(CommandHandler("task", add_task_command))
     app.add_handler(CommandHandler("list", list_tasks_command))
     app.add_handler(CommandHandler("done", complete_task_command))
+    app.add_handler(CommandHandler("remember", remember_command))
+    app.add_handler(CommandHandler("memory", memory_command))
+    app.add_handler(CommandHandler("forget", forget_command))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("gmail", gmail_command))
     app.add_handler(CommandHandler("drive", drive_command))

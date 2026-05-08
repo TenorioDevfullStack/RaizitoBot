@@ -1,15 +1,37 @@
-import sqlite3
 import os
+import sqlite3
+from pathlib import Path
 from datetime import datetime
 
-DB_PATH = os.getenv(
-    "DB_PATH",
-    "/tmp/bot_data.db" if os.getenv("VERCEL") else "bot_data.db",
-)
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _default_db_path():
+    if os.getenv("VERCEL"):
+        return "/tmp/bot_data.db"
+
+    if os.name == "nt":
+        base_dir = os.getenv("LOCALAPPDATA") or os.getenv("TEMP") or "."
+        return str(Path(base_dir) / "RaizitoBot" / "bot_data.db")
+
+    return "data/bot_data.db"
+
+
+def _db_path():
+    return os.getenv("DB_PATH") or _default_db_path()
+
+
+def _connect():
+    db_path = Path(_db_path())
+    if db_path.parent != Path("."):
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(db_path)
 
 def init_db():
     """Initialize the database with necessary tables."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     c = conn.cursor()
 
     # Tasks/Reminders table
@@ -36,11 +58,20 @@ def init_db():
         )
     ''')
 
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
 def add_task(user_id, title, description=None, due_date=None):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     c = conn.cursor()
     c.execute("INSERT INTO tasks (user_id, title, description, due_date) VALUES (?, ?, ?, ?)",
               (user_id, title, description, due_date))
@@ -50,7 +81,7 @@ def add_task(user_id, title, description=None, due_date=None):
     return task_id
 
 def get_tasks(user_id, pending_only=True):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     c = conn.cursor()
     query = "SELECT id, title, description, due_date, is_completed FROM tasks WHERE user_id = ?"
     if pending_only:
@@ -62,7 +93,7 @@ def get_tasks(user_id, pending_only=True):
     return rows
 
 def complete_task(task_id, user_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     c = conn.cursor()
     c.execute("UPDATE tasks SET is_completed = 1 WHERE id = ? AND user_id = ?", (task_id, user_id))
     rows_affected = c.rowcount
@@ -72,7 +103,7 @@ def complete_task(task_id, user_id):
 
 def log_conversation(user_id: int, role: str, content: str):
     """Persist a conversation message for contextual memory."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     c = conn.cursor()
     c.execute(
         "INSERT INTO conversations (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
@@ -83,7 +114,7 @@ def log_conversation(user_id: int, role: str, content: str):
 
 def get_conversation_history(user_id: int, limit: int = 10):
     """Return the most recent conversation messages in chronological order."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     c = conn.cursor()
     c.execute(
         """
@@ -104,3 +135,53 @@ def get_conversation_history(user_id: int, limit: int = 10):
         {"role": role, "content": content}
         for role, content in rows
     ]
+
+def add_memory(user_id: int, content: str):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO memories (user_id, content, created_at) VALUES (?, ?, ?)",
+        (user_id, content, datetime.utcnow().isoformat()),
+    )
+    conn.commit()
+    memory_id = c.lastrowid
+    conn.close()
+    return memory_id
+
+def get_memories(user_id: int, limit: int = 20):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, content, created_at
+        FROM memories
+        WHERE user_id = ?
+        ORDER BY datetime(created_at) DESC, id DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {"id": memory_id, "content": content, "created_at": created_at}
+        for memory_id, content, created_at in rows
+    ]
+
+def delete_memory(memory_id: int, user_id: int):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute("DELETE FROM memories WHERE id = ? AND user_id = ?", (memory_id, user_id))
+    rows_affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return rows_affected > 0
+
+def clear_memories(user_id: int):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
+    rows_affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return rows_affected
