@@ -10,6 +10,7 @@ Bot do Telegram com integração de IA (Google Gemini) que oferece conversação
 - 🎙️ **Transcrição de Áudio**: Converta mensagens de voz em texto com Gemini
 - 🖼️ **Análise de Imagens**: Envie fotos e receba análises da IA
 - 🧠 **Memória de Conversa**: Contexto das últimas interações para respostas mais coerentes
+- 🧩 **Memória Pessoal Persistente**: Salve fatos importantes com `/remember` ou mensagens como "lembre que..."
 - 📧 **Integração Google**: Leia e-mails, arquivos do Drive, eventos do Calendar e Docs
 - 📊 **Status do App**: Monitore o status do bot
 
@@ -87,6 +88,12 @@ Se não usar `TELEGRAM_WEBHOOK_SECRET`, remova o parâmetro `secret_token`.
 | `/task <descrição>` | Adiciona uma nova tarefa |
 | `/list` | Lista todas as tarefas pendentes |
 | `/done <id>` | Marca uma tarefa como concluída |
+| `/remember <texto>` | Salva uma memória pessoal persistente |
+| `/memory` | Lista as memórias salvas |
+| `/memory add <texto>` | Salva uma nova memória |
+| `/memory delete <id>` | Apaga uma memória específica |
+| `/memory clear` | Apaga todas as suas memórias |
+| `/forget <id>` | Apaga uma memória específica |
 | `/search <query>` | Busca informações na web |
 | `/gmail [query]` | Lista e-mails recentes (com filtro opcional) |
 | `/drive` | Lista arquivos recentes do Drive |

@@ -58,6 +58,15 @@ def init_db():
         )
     ''')
 
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -126,3 +135,53 @@ def get_conversation_history(user_id: int, limit: int = 10):
         {"role": role, "content": content}
         for role, content in rows
     ]
+
+def add_memory(user_id: int, content: str):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO memories (user_id, content, created_at) VALUES (?, ?, ?)",
+        (user_id, content, datetime.utcnow().isoformat()),
+    )
+    conn.commit()
+    memory_id = c.lastrowid
+    conn.close()
+    return memory_id
+
+def get_memories(user_id: int, limit: int = 20):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, content, created_at
+        FROM memories
+        WHERE user_id = ?
+        ORDER BY datetime(created_at) DESC, id DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {"id": memory_id, "content": content, "created_at": created_at}
+        for memory_id, content, created_at in rows
+    ]
+
+def delete_memory(memory_id: int, user_id: int):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute("DELETE FROM memories WHERE id = ? AND user_id = ?", (memory_id, user_id))
+    rows_affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return rows_affected > 0
+
+def clear_memories(user_id: int):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
+    rows_affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return rows_affected
