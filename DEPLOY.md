@@ -15,10 +15,6 @@ Antes de fazer o deploy, você precisa:
    - Acesse [Google AI Studio](https://makersuite.google.com/app/apikey)
    - Crie uma nova API key
 
-3. **Groq API Key** (para transcrição de áudio)
-   - Acesse [Groq Console](https://console.groq.com)
-   - Crie uma conta e gere uma API key
-
 ---
 
 ## 🎯 Opção 1: Railway (Recomendado - Gratuito)
@@ -40,7 +36,6 @@ Antes de fazer o deploy, você precisa:
      ```
      TELEGRAM_TOKEN=seu_token_aqui
      GEMINI_API_KEY=sua_key_aqui
-     GROQ_API_KEY=sua_key_aqui
      ```
 
 4. **Deploy automático**
@@ -80,7 +75,6 @@ Antes de fazer o deploy, você precisa:
      ```
      TELEGRAM_TOKEN=seu_token_aqui
      GEMINI_API_KEY=sua_key_aqui
-     GROQ_API_KEY=sua_key_aqui
      ```
 
 5. **Deploy**
@@ -127,7 +121,6 @@ Antes de fazer o deploy, você precisa:
    ```env
    TELEGRAM_TOKEN=seu_token_aqui
    GEMINI_API_KEY=sua_key_aqui
-   GROQ_API_KEY=sua_key_aqui
    ```
 
 5. **Inicie o bot com Docker Compose**
@@ -183,7 +176,7 @@ Antes de fazer o deploy, você precisa:
      --image gcr.io/SEU_PROJETO_ID/raizitobot \
      --platform managed \
      --region us-central1 \
-     --set-env-vars TELEGRAM_TOKEN=seu_token,GEMINI_API_KEY=sua_key,GROQ_API_KEY=sua_key
+     --set-env-vars TELEGRAM_TOKEN=seu_token,GEMINI_API_KEY=sua_key
    ```
 
 ✅ **Bot no Google Cloud!**
@@ -215,7 +208,6 @@ Antes de fazer o deploy, você precisa:
    ```bash
    heroku config:set TELEGRAM_TOKEN=seu_token
    heroku config:set GEMINI_API_KEY=sua_key
-   heroku config:set GROQ_API_KEY=sua_key
    ```
 
 5. **Deploy**
