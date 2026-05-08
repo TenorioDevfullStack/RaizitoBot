@@ -51,7 +51,38 @@ Antes de fazer o deploy, você precisa:
 
 ---
 
-## 🎯 Opção 2: Render (Alternativa Gratuita)
+## 🎯 Opção 2: Vercel
+
+**Importante**: na Vercel o bot não usa polling contínuo. Ele responde via webhook em `/api/webhook`.
+
+### Passo a Passo
+
+1. **Configure as variáveis de ambiente na Vercel**
+   ```env
+   TELEGRAM_TOKEN=seu_token_aqui
+   GEMINI_API_KEY=sua_key_aqui
+   TELEGRAM_WEBHOOK_SECRET=um_segredo_aleatorio
+   ```
+
+2. **Faça o deploy**
+   - Use o repositório GitHub normalmente pela Vercel.
+   - A rota de produção será `https://SEU-DOMINIO.vercel.app/api/webhook`.
+
+3. **Aponte o Telegram para o webhook**
+   ```bash
+   curl "https://api.telegram.org/botSEU_TOKEN/setWebhook?url=https://SEU-DOMINIO.vercel.app/api/webhook&secret_token=SEU_SEGREDO"
+   ```
+
+4. **Verifique o webhook**
+   ```bash
+   curl "https://api.telegram.org/botSEU_TOKEN/getWebhookInfo"
+   ```
+
+✅ **Bot respondendo via webhook na Vercel!**
+
+---
+
+## 🎯 Opção 3: Render (Alternativa Gratuita)
 
 **Vantagens**: Gratuito, fácil configuração, SSL automático
 
@@ -85,7 +116,7 @@ Antes de fazer o deploy, você precisa:
 
 ---
 
-## 🎯 Opção 3: VPS/Servidor com Docker
+## 🎯 Opção 4: VPS/Servidor com Docker
 
 **Vantagens**: Controle total, pode usar qualquer provedor (DigitalOcean, AWS, Azure, etc.)
 
@@ -150,7 +181,7 @@ Antes de fazer o deploy, você precisa:
 
 ---
 
-## 🎯 Opção 4: Google Cloud Run
+## 🎯 Opção 5: Google Cloud Run
 
 **Vantagens**: Escalável, paga apenas pelo uso, infraestrutura do Google
 
@@ -183,7 +214,7 @@ Antes de fazer o deploy, você precisa:
 
 ---
 
-## 🎯 Opção 5: Heroku
+## 🎯 Opção 6: Heroku
 
 **Vantagens**: Tradicional, bem documentado
 
@@ -235,6 +266,11 @@ Para todas as opções baseadas em Git (Railway, Render):
 2. Push para o GitHub
 3. Deploy automático será acionado
 
+Para Vercel, depois do deploy confirme se o webhook continua apontando para:
+```bash
+https://SEU-DOMINIO.vercel.app/api/webhook
+```
+
 Para Docker:
 ```bash
 git pull
@@ -244,6 +280,7 @@ docker-compose up -d --build
 ### Logs e Debugging
 
 - **Railway**: Painel → View Logs
+- **Vercel**: Dashboard → Project → Logs ou Functions
 - **Render**: Dashboard → Logs
 - **Docker**: `docker-compose logs -f`
 - **Heroku**: `heroku logs --tail`
@@ -274,6 +311,7 @@ docker-compose up -d --build
 | Plataforma | Custo Mensal | Notas |
 |------------|--------------|-------|
 | Railway | **Gratuito** | $5/mês de crédito grátis |
+| Vercel | **Gratuito** | Ideal para webhook serverless |
 | Render | **Gratuito** | Plano free tier |
 | VPS (DigitalOcean) | $4-6 | Droplet básico |
 | Google Cloud Run | $0-5 | Pay-per-use |

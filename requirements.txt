@@ -4,6 +4,7 @@ beautifulsoup4
 python-dotenv
 pydub
 yt-dlp
+Pillow
 google-api-python-client
 google-auth
 google-auth-httplib2

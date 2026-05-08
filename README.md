@@ -18,6 +18,7 @@ Bot do Telegram com integração de IA (Google Gemini) que oferece conversação
 Para colocar o bot em produção, consulte o **[Guia de Deploy](DEPLOY.md)** completo com instruções para:
 
 - ⭐ **Railway** (recomendado - gratuito e fácil)
+- ▲ **Vercel** (webhook serverless)
 - 🌐 **Render** (alternativa gratuita)
 - 🐳 **Docker** (VPS/servidor próprio)
 - ☁️ **Google Cloud Run**
@@ -55,6 +56,7 @@ Para configurar as chaves de API necessárias (Google Search, Gmail, Drive, etc.
    
    Edite o arquivo `.env` com suas credenciais:
    - `TELEGRAM_TOKEN`: Token do [@BotFather](https://t.me/BotFather)
+   - `TELEGRAM_WEBHOOK_SECRET`: segredo opcional para proteger o webhook do Telegram
    - `GEMINI_API_KEY`: Key do [Google AI Studio](https://aistudio.google.com/)
    - `GEMINI_MODEL`: Modelo Gemini opcional (padrão: `gemini-2.5-flash`)
    - `GOOGLE_SEARCH_API_KEY` e `GOOGLE_SEARCH_CX`: Chaves do Google Custom Search
@@ -65,6 +67,16 @@ Para configurar as chaves de API necessárias (Google Search, Gmail, Drive, etc.
    ```bash
    python main.py
    ```
+
+### Deploy na Vercel
+
+Na Vercel, o bot roda por webhook em `/api/webhook`. Depois do deploy, configure o webhook do Telegram:
+
+```bash
+curl "https://api.telegram.org/bot<TELEGRAM_TOKEN>/setWebhook?url=https://SEU-DOMINIO.vercel.app/api/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+```
+
+Se não usar `TELEGRAM_WEBHOOK_SECRET`, remova o parâmetro `secret_token`.
 
 ## 📋 Comandos Disponíveis
 
