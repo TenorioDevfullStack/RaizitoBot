@@ -16,15 +16,31 @@ Objetivo: fazer o bot lembrar contexto importante e entender comandos naturais s
 
 Objetivo: deixar as tarefas mais proximas de um assistente real.
 
+Status: implementacao inicial iniciada.
+
 - Prazo, prioridade e categoria nas tarefas.
 - Listagem por hoje, semana, atrasadas e concluidas.
 - Lembretes agendados usando job queue do python-telegram-bot.
 - Criacao de tarefa por linguagem natural.
 - Recorrencia simples: diaria, semanal e mensal.
 
+## Fase 2.5 - Memoria semantica e RAG
+
+Objetivo: permitir que o bot recupere memorias, tarefas e documentos por significado, nao apenas por palavras exatas.
+
+Status: implementacao inicial iniciada.
+
+- Banco vetorial local em SQLite.
+- Embeddings locais deterministas por hashing.
+- Indexacao automatica de memorias e tarefas.
+- Comando `/knowledge` para busca semantica, notas e indexacao de docs.
+- Contexto RAG injetado nas respostas do Gemini.
+
 ## Fase 3 - Agenda e resumo diario
 
 Objetivo: transformar Calendar + tarefas + memoria em briefing pessoal.
+
+Status: implementacao inicial iniciada.
 
 - Comando `/today` com agenda, tarefas e prioridades.
 - Resumo diario automatico em horario configuravel.
@@ -32,9 +48,51 @@ Objetivo: transformar Calendar + tarefas + memoria em briefing pessoal.
 - Avisos antes de reunioes.
 - Sugestoes de reorganizacao quando o dia estiver cheio.
 
+### Fase 3.1 - Agenda inteligente
+
+Status: implementacao inicial iniciada.
+
+- Detectar conflitos antes de confirmar eventos.
+- Sugerir horarios alternativos quando houver conflito.
+- Entender local, descricao e convidados por e-mail.
+- Configurar antecedencia dos avisos de reuniao.
+- Indexar eventos criados na base RAG.
+
 ## Fase 4 - Email e Drive inteligentes
 
 Objetivo: fazer o bot ler, resumir e preparar respostas com aprovacao humana.
+
+### Fase 4.1 - E-mails inteligentes com resumo e RAG
+
+Status: implementacao inicial iniciada.
+
+- Buscar e-mails recentes com remetente, assunto, data e snippet.
+- Resumir e-mails recentes com Gemini.
+- Classificar prioridade por heuristica inicial.
+- Indexar e-mails na base RAG.
+- Buscar e-mails semanticamente com `/emails search`.
+- Nao enviar respostas nesta etapa.
+
+### Fase 4.2 - Rascunhos locais com aprovacao humana
+
+Status: implementacao inicial iniciada.
+
+- Gerar rascunho local a partir de um e-mail e uma instrucao.
+- Salvar rascunhos em tabela `email_drafts`.
+- Listar, visualizar e arquivar rascunhos.
+- Indexar rascunhos na base RAG.
+- Nao enviar e-mails nesta etapa.
+
+### Fase 4.3 - Drive e Docs inteligentes com RAG
+
+Status: implementacao inicial iniciada.
+
+- Listar arquivos do Drive com ID, tipo, modificacao e link.
+- Indexar metadados de arquivos do Drive na base RAG.
+- Buscar arquivos do Drive por significado.
+- Extrair texto completo de Google Docs.
+- Resumir e indexar Google Docs.
+- Nao editar arquivos nesta etapa.
 
 - Resumo de emails recentes e importantes.
 - Busca semantica simples em emails.
