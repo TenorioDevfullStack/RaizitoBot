@@ -65,7 +65,7 @@ Para acessar os dados do usuário, usaremos uma Conta de Serviço.
      5. **OU**, se já estiver na tela de Configurações, clique em **"Leandro Tenório"** no menu lateral esquerdo (abaixo de "Configurações das minhas agendas").
      6. Role a página principal até encontrar a seção **"Compartilhar com pessoas ou grupos específicos"**.
      7. Clique em **"Adicionar pessoas e grupos"**.
-     8. Cole o e-mail da conta de serviço e certifique-se de selecionar a permissão **"Ver todos os detalhes do evento"**.
+     8. Cole o e-mail da conta de serviço e selecione **"Fazer alterações em eventos"** se quiser usar criação de eventos com `/event` e `/confirm_event`. Para apenas ler a agenda, **"Ver todos os detalhes do evento"** é suficiente.
      9. Clique em **"Enviar"**.
 
 ## Resumo das Variáveis no `.env`
@@ -74,4 +74,5 @@ Para acessar os dados do usuário, usaremos uma Conta de Serviço.
 GOOGLE_SEARCH_API_KEY=Sua_Chave_de_API_do_Passo_3
 GOOGLE_SEARCH_CX=Seu_ID_CX_do_Passo_3
 GOOGLE_SERVICE_ACCOUNT_FILE=caminho/para/seu/arquivo_json_do_Passo_4.json
+GOOGLE_CALENDAR_TIMEZONE=America/Sao_Paulo
 ```
