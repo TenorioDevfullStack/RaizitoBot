@@ -5,18 +5,31 @@ from typing import List, Dict
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
-GOOGLE_DELEGATED_USER = os.getenv("GOOGLE_DELEGATED_USER")
-GOOGLE_CALENDAR_TIMEZONE = os.getenv("GOOGLE_CALENDAR_TIMEZONE", "America/Sao_Paulo")
-
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
 CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 DOCS_SCOPES = ["https://www.googleapis.com/auth/documents.readonly"]
 
 
-def _get_credentials(scopes: List[str]):
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "sim", "on"}
+
+
+def _gmail_user_id():
+    return os.getenv("GOOGLE_GMAIL_USER_ID", "me")
+
+
+def _calendar_id():
+    return os.getenv("GOOGLE_CALENDAR_ID", "primary")
+
+
+def _get_credentials(scopes: List[str], use_delegation: bool | None = None):
     json_creds = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+    delegated_user = os.getenv("GOOGLE_DELEGATED_USER")
 
     if json_creds:
         import json
@@ -27,17 +40,48 @@ def _get_credentials(scopes: List[str]):
             )
         except json.JSONDecodeError as e:
              raise ValueError(f"⚠️ Invalid JSON in GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
-    elif GOOGLE_SERVICE_ACCOUNT_FILE and os.path.exists(GOOGLE_SERVICE_ACCOUNT_FILE):
+    elif service_account_file and os.path.exists(service_account_file):
         credentials = service_account.Credentials.from_service_account_file(
-            GOOGLE_SERVICE_ACCOUNT_FILE, scopes=scopes
+            service_account_file, scopes=scopes
         )
     else:
         raise ValueError("⚠️ No valid Google credentials found. Set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_FILE.")
 
-    if GOOGLE_DELEGATED_USER:
-        credentials = credentials.with_subject(GOOGLE_DELEGATED_USER)
+    if use_delegation is None:
+        use_delegation = _env_flag("GOOGLE_USE_DOMAIN_WIDE_DELEGATION", bool(delegated_user))
+
+    if delegated_user and use_delegation:
+        credentials = credentials.with_subject(delegated_user)
 
     return credentials
+
+
+def _get_gmail_credentials():
+    return _get_credentials(
+        GMAIL_SCOPES,
+        use_delegation=_env_flag("GOOGLE_GMAIL_USE_DELEGATION", bool(os.getenv("GOOGLE_DELEGATED_USER"))),
+    )
+
+
+def _get_drive_credentials():
+    return _get_credentials(
+        DRIVE_SCOPES,
+        use_delegation=_env_flag("GOOGLE_DRIVE_USE_DELEGATION", False),
+    )
+
+
+def _get_calendar_credentials():
+    return _get_credentials(
+        CALENDAR_SCOPES,
+        use_delegation=_env_flag("GOOGLE_CALENDAR_USE_DELEGATION", False),
+    )
+
+
+def _get_docs_credentials():
+    return _get_credentials(
+        DOCS_SCOPES,
+        use_delegation=_env_flag("GOOGLE_DOCS_USE_DELEGATION", False),
+    )
 
 
 def list_recent_emails(query: str | None = None, max_results: int = 5) -> str:
@@ -61,7 +105,7 @@ def list_recent_emails(query: str | None = None, max_results: int = 5) -> str:
 
 
 def _gmail_service():
-    credentials = _get_credentials(GMAIL_SCOPES)
+    credentials = _get_gmail_credentials()
     return build("gmail", "v1", credentials=credentials)
 
 
@@ -75,7 +119,7 @@ def get_recent_emails(query: str | None = None, max_results: int = 10) -> List[D
     response = (
         service.users()
         .messages()
-        .list(userId="me", q=query or "", maxResults=max_results)
+        .list(userId=_gmail_user_id(), q=query or "", maxResults=max_results)
         .execute()
     )
     messages = response.get("messages", [])
@@ -86,7 +130,7 @@ def get_recent_emails(query: str | None = None, max_results: int = 10) -> List[D
             service.users()
             .messages()
             .get(
-                userId="me",
+                userId=_gmail_user_id(),
                 id=message["id"],
                 format="metadata",
                 metadataHeaders=["From", "Subject", "Date"],
@@ -112,7 +156,7 @@ def get_email_metadata(message_id: str) -> Dict:
         service.users()
         .messages()
         .get(
-            userId="me",
+            userId=_gmail_user_id(),
             id=message_id,
             format="metadata",
             metadataHeaders=["From", "Subject", "Date", "To", "Cc"],
@@ -147,7 +191,7 @@ def list_drive_files(page_size: int = 5) -> str:
 
 
 def _drive_service():
-    credentials = _get_credentials(DRIVE_SCOPES)
+    credentials = _get_drive_credentials()
     return build("drive", "v3", credentials=credentials)
 
 
@@ -175,14 +219,14 @@ def get_drive_file_metadata(file_id: str) -> Dict:
 
 
 def list_upcoming_events(max_results: int = 5) -> str:
-    credentials = _get_credentials(CALENDAR_SCOPES)
+    credentials = _get_calendar_credentials()
     service = build("calendar", "v3", credentials=credentials)
 
     now = datetime.now(timezone.utc).isoformat()
     events_result = (
         service.events()
         .list(
-            calendarId="primary",
+            calendarId=_calendar_id(),
             timeMin=now,
             maxResults=max_results,
             singleEvents=True,
@@ -205,13 +249,13 @@ def list_upcoming_events(max_results: int = 5) -> str:
 
 
 def get_events_between(start_dt: datetime, end_dt: datetime, max_results: int = 20) -> List[Dict]:
-    credentials = _get_credentials(CALENDAR_SCOPES)
+    credentials = _get_calendar_credentials()
     service = build("calendar", "v3", credentials=credentials)
 
     events_result = (
         service.events()
         .list(
-            calendarId="primary",
+            calendarId=_calendar_id(),
             timeMin=start_dt.isoformat(),
             timeMax=end_dt.isoformat(),
             maxResults=max_results,
@@ -254,17 +298,18 @@ def create_calendar_event(
     location: str | None = None,
     attendees: List[str] | None = None,
 ) -> Dict:
-    credentials = _get_credentials(CALENDAR_SCOPES)
+    credentials = _get_calendar_credentials()
     service = build("calendar", "v3", credentials=credentials)
+    calendar_timezone = os.getenv("GOOGLE_CALENDAR_TIMEZONE", "America/Sao_Paulo")
     event = {
         "summary": summary,
         "start": {
             "dateTime": start_dt.isoformat(),
-            "timeZone": GOOGLE_CALENDAR_TIMEZONE,
+            "timeZone": calendar_timezone,
         },
         "end": {
             "dateTime": end_dt.isoformat(),
-            "timeZone": GOOGLE_CALENDAR_TIMEZONE,
+            "timeZone": calendar_timezone,
         },
     }
     if description:
@@ -274,7 +319,7 @@ def create_calendar_event(
     if attendees:
         event["attendees"] = [{"email": email} for email in attendees]
 
-    return service.events().insert(calendarId="primary", body=event).execute()
+    return service.events().insert(calendarId=_calendar_id(), body=event).execute()
 
 
 def get_document_metadata(document_id: str) -> str:
@@ -289,7 +334,7 @@ def get_document_metadata(document_id: str) -> str:
 
 
 def _docs_service():
-    credentials = _get_credentials(DOCS_SCOPES)
+    credentials = _get_docs_credentials()
     return build("docs", "v1", credentials=credentials)
 
 

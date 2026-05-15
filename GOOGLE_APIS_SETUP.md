@@ -1,6 +1,6 @@
 # 🔑 Guia de Configuração das APIs do Google
 
-Este guia detalha como obter as credenciais necessárias para as funcionalidades de busca e integração com o Google Workspace (Gmail, Drive, Calendar, Docs).
+Este guia detalha como obter as credenciais necessárias para as funcionalidades de busca, Google Workspace (Gmail, Drive, Calendar, Docs), Google Maps e MCP.
 
 ## 1. Criar um Projeto no Google Cloud
 
@@ -17,6 +17,9 @@ No menu lateral, vá em **"APIs e Serviços" > "Biblioteca"** e pesquise/ative a
 - **Google Drive API**
 - **Google Calendar API**
 - **Google Docs API**
+- **Geocoding API** (Maps)
+- **Directions API** (Maps)
+- **Places API** (Maps)
 - **Custom Search API** (para busca na web)
 
 ## 3. Configurar a Busca na Web (Custom Search)
@@ -68,11 +71,62 @@ Para acessar os dados do usuário, usaremos uma Conta de Serviço.
      8. Cole o e-mail da conta de serviço e selecione **"Fazer alterações em eventos"** se quiser usar criação de eventos com `/event` e `/confirm_event`. Para apenas ler a agenda, **"Ver todos os detalhes do evento"** é suficiente.
      9. Clique em **"Enviar"**.
 
+## 5. Configurar Google Maps
+
+Para usar as ferramentas MCP de Maps, crie uma API Key no Google Cloud:
+
+1. Vá em **"APIs e Serviços" > "Credenciais"**.
+2. Clique em **"Criar Credenciais" > "Chave de API"**.
+3. Restrinja a chave para as APIs de Maps que você habilitou:
+   - Geocoding API
+   - Directions API
+   - Places API
+4. Copie a chave para `GOOGLE_MAPS_API_KEY`.
+
+## 6. Usar o servidor MCP
+
+O servidor MCP fica em `bot/mcp_google_server.py` e expõe ferramentas para Calendar, Maps, Drive, Docs e Gmail.
+
+Execute localmente:
+
+```bash
+python -m bot.mcp_google_server
+```
+
+Configuração típica em um cliente MCP:
+
+```json
+{
+  "mcpServers": {
+    "raizitobot-google": {
+      "command": "python",
+      "args": ["-m", "bot.mcp_google_server"],
+      "env": {
+        "GOOGLE_SERVICE_ACCOUNT_FILE": "service_account.json",
+        "GOOGLE_MAPS_API_KEY": "sua_chave_maps"
+      }
+    }
+  }
+}
+```
+
 ## Resumo das Variáveis no `.env`
 
 ```env
 GOOGLE_SEARCH_API_KEY=Sua_Chave_de_API_do_Passo_3
 GOOGLE_SEARCH_CX=Seu_ID_CX_do_Passo_3
 GOOGLE_SERVICE_ACCOUNT_FILE=caminho/para/seu/arquivo_json_do_Passo_4.json
+GOOGLE_SERVICE_ACCOUNT_JSON=
+GOOGLE_DELEGATED_USER=
+GOOGLE_USE_DOMAIN_WIDE_DELEGATION=false
+GOOGLE_GMAIL_USE_DELEGATION=true
+GOOGLE_DRIVE_USE_DELEGATION=false
+GOOGLE_CALENDAR_USE_DELEGATION=false
+GOOGLE_DOCS_USE_DELEGATION=false
+GOOGLE_GMAIL_USER_ID=me
+GOOGLE_CALENDAR_ID=primary
 GOOGLE_CALENDAR_TIMEZONE=America/Sao_Paulo
+GOOGLE_MAPS_API_KEY=Sua_Chave_de_API_do_Passo_5
+GOOGLE_MAPS_LANGUAGE=pt-BR
+MCP_TRANSPORT=stdio
 ```

@@ -15,6 +15,7 @@ Bot do Telegram com integração de IA (Google Gemini) que oferece conversação
 - 🗓️ **Briefing Diário**: Combine agenda, tarefas, memória e RAG com `/today` e resumos automáticos
 - 📧 **E-mails Inteligentes**: Liste, resuma e indexe Gmail no RAG sem enviar respostas automaticamente
 - 📁 **Drive/Docs Inteligentes**: Indexe arquivos do Drive e resuma Google Docs com RAG
+- 🔌 **MCP Google**: Servidor MCP para Calendar, Maps, Drive, Docs e Gmail
 - 📊 **Status do App**: Monitore o status do bot
 
 ## 🚀 Deploy em Produção
@@ -167,6 +168,16 @@ Memórias e tarefas são indexadas automaticamente. Para indexar a documentaçã
 
 Nas conversas normais, o bot busca itens relevantes nessa base e injeta o contexto recuperado no prompt do Gemini.
 
+### MCP Google
+
+O servidor MCP fica em `bot/mcp_google_server.py` e expõe ferramentas para Gmail, Drive, Docs, Calendar e Maps. Ele usa as mesmas credenciais do bot.
+
+```bash
+python -m bot.mcp_google_server
+```
+
+Em um cliente MCP, configure o comando acima a partir da raiz do projeto e preencha as variáveis do `.env.example`.
+
 ### Agenda e briefing diário
 
 ```text
@@ -225,6 +236,8 @@ RaizitoBot/
 │   ├── db.py                  # Gerenciamento do banco de dados e memória de conversas
 │   ├── external_integration.py # Integrações externas
 │   ├── google_services.py     # Integrações Gmail/Drive/Calendar/Docs
+│   ├── google_maps.py         # Integrações Google Maps
+│   ├── mcp_google_server.py   # Servidor MCP Google
 │   ├── handlers.py            # Handlers do Telegram
 │   └── web_search.py          # Funcionalidade de busca web
 ├── main.py                    # Arquivo principal

@@ -20,7 +20,7 @@ def google_search(query):
     }
 
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=20)
         response.raise_for_status()
         results = response.json().get("items", [])
         
@@ -35,5 +35,11 @@ def google_search(query):
             formatted_results += f"• [{title}]({link})\n_{snippet}_\n\n"
         
         return formatted_results
-    except Exception as e:
-        return f"Error performing search: {str(e)}"
+    except requests.HTTPError:
+        try:
+            detail = response.json().get("error", {}).get("message")
+        except ValueError:
+            detail = response.reason
+        return f"Error performing search: HTTP {response.status_code} - {detail}"
+    except requests.RequestException as e:
+        return f"Error performing search: {type(e).__name__}"
