@@ -4,7 +4,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://pro.raizeletrica.com.br"
+BASE_URL = os.getenv("CUSTOM_API_URL", "https://pro.raizeletrica.com.br").rstrip("/")
 # Note: Since we don't have the exact API endpoints, these are placeholders.
 # We will likely need to reverse engineer the API or use Selenium/Playwright if there is no public API.
 # For now, we assume a standard REST API structure.

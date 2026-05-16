@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite3
+bot_data.db
+data/
+logs/
+service_account.json
+.git/
+.gitignore
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

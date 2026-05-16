@@ -17,9 +17,22 @@ Antes de fazer o deploy, você precisa:
 
 ---
 
-## 🎯 Opção 1: Railway (Recomendado - Gratuito)
+## Escolha recomendada para produção
 
-**Vantagens**: Fácil, gratuito, deploy automático via Git, logs em tempo real
+Para este bot, prefira um serviço contínuo 24/7 rodando `python main.py`:
+
+- **VPS com Docker**: opção mais previsível para produção, com banco SQLite persistente em `./data`.
+- **Railway/serviço similar com volume persistente**: funciona bem se configurado como serviço contínuo, não como função serverless.
+
+Evite depender do Windows local. Se o processo `python main.py` parar, o Telegram continua recebendo mensagens, mas ninguém consome os updates.
+
+Também evite plano gratuito que hiberna para produção. Bots em polling precisam ficar ativos o tempo todo.
+
+## 🎯 Opção 1: Railway
+
+**Vantagens**: Fácil, deploy automático via Git, logs em tempo real.
+
+Configure volume persistente se quiser manter o SQLite entre redeploys/restarts.
 
 ### Passo a Passo
 
@@ -47,7 +60,7 @@ Antes de fazer o deploy, você precisa:
    - Clique em "Deployments" → "View Logs"
    - Você deve ver "Bot is running..."
 
-✅ **Pronto!** Seu bot está no ar 24/7 gratuitamente!
+✅ **Pronto!** Seu bot fica rodando fora do Windows.
 
 ---
 
@@ -82,9 +95,9 @@ Antes de fazer o deploy, você precisa:
 
 ---
 
-## 🎯 Opção 3: Render (Alternativa Gratuita)
+## 🎯 Opção 3: Render
 
-**Vantagens**: Gratuito, fácil configuração, SSL automático
+Use apenas em plano que não hiberne. O plano gratuito pode parar por inatividade e não é indicado para polling contínuo com SQLite local.
 
 ### Passo a Passo
 
@@ -112,7 +125,7 @@ Antes de fazer o deploy, você precisa:
    - Clique em "Create Web Service"
    - Aguarde o deploy (3-5 minutos)
 
-✅ **Bot online!**
+✅ **Bot online se o serviço permanecer ativo.**
 
 ---
 
@@ -154,8 +167,27 @@ Antes de fazer o deploy, você precisa:
    GEMINI_API_KEY=sua_key_aqui
    ```
 
+   Para usar Supabase como banco vetorial do RAG, rode `supabase/knowledge_items.sql`
+   no SQL Editor do Supabase e adicione também:
+   ```env
+   RAG_VECTOR_BACKEND=supabase
+   RAG_SUPABASE_FALLBACK_TO_SQLITE=true
+   SUPABASE_URL=https://seu-projeto.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=sua_service_role_key
+   SUPABASE_SCHEMA=public
+   SUPABASE_KNOWLEDGE_TABLE=knowledge_items
+   SUPABASE_MATCH_FUNCTION=match_knowledge_items
+   SUPABASE_REQUEST_TIMEOUT=10
+   ```
+
+   Depois de preencher as variáveis, valide a conexão:
+   ```bash
+   python scripts/check_supabase_vector_store.py
+   ```
+
 5. **Inicie o bot com Docker Compose**
    ```bash
+   mkdir -p data
    docker-compose up -d
    ```
 
@@ -310,9 +342,9 @@ docker-compose up -d --build
 
 | Plataforma | Custo Mensal | Notas |
 |------------|--------------|-------|
-| Railway | **Gratuito** | $5/mês de crédito grátis |
-| Vercel | **Gratuito** | Ideal para webhook serverless |
-| Render | **Gratuito** | Plano free tier |
+| Railway | Variável | Use serviço contínuo com volume persistente |
+| Vercel | Variável | Webhook serverless; não mantém scheduler/polling |
+| Render | Variável | Evite plano que hiberna para produção |
 | VPS (DigitalOcean) | $4-6 | Droplet básico |
 | Google Cloud Run | $0-5 | Pay-per-use |
 | Heroku | $7+ | Sem plano gratuito |

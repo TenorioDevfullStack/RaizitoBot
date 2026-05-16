@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import tempfile
@@ -13,25 +14,33 @@ from bot.db import (
     add_task,
     clear_memories,
     complete_task_with_recurrence,
+    confirm_mission_step,
+    create_mission,
     delete_pending_calendar_event,
     delete_memory,
     get_email_draft,
     get_email_drafts,
+    get_mission,
     get_pending_calendar_event,
     get_conversation_history,
     get_due_task_reminders,
+    get_knowledge_backend,
     get_memories,
     get_tasks,
     get_user_settings,
     get_users_for_daily_summary,
     get_users_with_meeting_reminders,
+    list_missions,
     clear_knowledge_source,
     count_knowledge_items,
     log_conversation,
     mark_calendar_event_reminded,
     mark_task_reminded,
     search_knowledge,
+    save_mission_report,
     update_email_draft_status,
+    update_mission_status,
+    update_mission_step,
     upsert_user_settings,
     upsert_knowledge_item,
 )
@@ -99,6 +108,19 @@ EVENT_PREFIXES = (
     "coloque na agenda ",
 )
 
+MISSION_PREFIXES = (
+    "missao: ",
+    "missão: ",
+    "meta: ",
+    "modo agente: ",
+    "crie uma missao ",
+    "crie uma missão ",
+    "nova missao ",
+    "nova missão ",
+    "planeje uma missao ",
+    "planeje uma missão ",
+)
+
 TASK_FILTER_ALIASES = {
     "hoje": "today",
     "today": "today",
@@ -115,6 +137,71 @@ TASK_FILTER_ALIASES = {
     "pendentes": "pending",
     "pending": "pending",
 }
+
+MISSION_STATUS_ALIASES = {
+    "ativas": "active",
+    "ativa": "active",
+    "active": "active",
+    "pausadas": "paused",
+    "paused": "paused",
+    "concluidas": "completed",
+    "concluídas": "completed",
+    "completed": "completed",
+    "arquivadas": "archived",
+    "archived": "archived",
+    "todas": "all",
+    "all": "all",
+}
+
+MISSION_STEP_ACTIONS = {
+    "start": "in_progress",
+    "iniciar": "in_progress",
+    "comecar": "in_progress",
+    "começar": "in_progress",
+    "doing": "in_progress",
+    "done": "done",
+    "concluir": "done",
+    "concluido": "done",
+    "concluído": "done",
+    "ok": "done",
+    "block": "blocked",
+    "bloquear": "blocked",
+    "bloqueado": "blocked",
+    "skip": "skipped",
+    "pular": "skipped",
+    "ignorar": "skipped",
+    "todo": "pending",
+    "pendente": "pending",
+    "reabrir": "pending",
+}
+
+MISSION_SENSITIVE_TERMS = (
+    "enviar email",
+    "enviar e-mail",
+    "mandar email",
+    "mandar e-mail",
+    "responder email",
+    "responder e-mail",
+    "criar evento",
+    "marcar reuniao",
+    "marcar reunião",
+    "agendar",
+    "apagar",
+    "deletar",
+    "excluir",
+    "remover",
+    "arquivar",
+    "pagar",
+    "pagamento",
+    "comprar",
+    "contratar",
+    "cancelar",
+    "transferir",
+    "publicar",
+    "enviar proposta",
+    "assinar",
+    "alterar",
+)
 
 DOC_FILES = (
     "README.md",
@@ -160,6 +247,15 @@ def _extract_event_text(text):
     stripped = text.strip()
     lowered = stripped.lower()
     for prefix in EVENT_PREFIXES:
+        if lowered.startswith(prefix):
+            return stripped[len(prefix):].strip()
+    return None
+
+
+def _extract_mission_goal(text):
+    stripped = text.strip()
+    lowered = stripped.lower()
+    for prefix in MISSION_PREFIXES:
         if lowered.startswith(prefix):
             return stripped[len(prefix):].strip()
     return None
@@ -554,6 +650,257 @@ def _format_event_preview(pending_event):
         lines.append(f"Descricao: {pending_event['description']}")
     lines.append(f"Confirme com /confirm_event {pending_event['id']} ou cancele com /cancel_event {pending_event['id']}")
     return "\n".join(lines)
+
+
+def _is_sensitive_mission_action(text):
+    lowered = (text or "").lower()
+    return any(term in lowered for term in MISSION_SENSITIVE_TERMS)
+
+
+def _fallback_mission_plan(goal):
+    return (
+        "Plano inicial criado localmente.",
+        [
+            {
+                "title": "Definir resultado esperado",
+                "details": f"Escrever o que precisa estar pronto para considerar a meta concluida: {goal}",
+                "requires_confirmation": False,
+            },
+            {
+                "title": "Levantar contexto e restricoes",
+                "details": "Reunir informacoes, prazos, dependencias e riscos antes de agir.",
+                "requires_confirmation": False,
+            },
+            {
+                "title": "Executar a primeira acao concreta",
+                "details": "Transformar o plano em uma entrega pequena e verificavel.",
+                "requires_confirmation": _is_sensitive_mission_action(goal),
+            },
+            {
+                "title": "Validar resultado",
+                "details": "Conferir se a entrega atende a meta e registrar ajustes necessarios.",
+                "requires_confirmation": False,
+            },
+            {
+                "title": "Reportar progresso",
+                "details": "Atualizar a missao com o que foi feito, bloqueios e proximo passo.",
+                "requires_confirmation": False,
+            },
+        ],
+    )
+
+
+def _strip_json_fence(text):
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text or "", flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        return fenced.group(1).strip()
+    return (text or "").strip()
+
+
+def _boolish(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "sim", "on"}
+    return bool(value)
+
+
+def _parse_mission_plan_response(text, goal):
+    candidates = [_strip_json_fence(text)]
+    object_match = re.search(r"\{.*\}", text or "", flags=re.DOTALL)
+    if object_match:
+        candidates.append(object_match.group(0))
+    array_match = re.search(r"\[.*\]", text or "", flags=re.DOTALL)
+    if array_match:
+        candidates.append(array_match.group(0))
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+
+        summary = None
+        raw_steps = parsed
+        if isinstance(parsed, dict):
+            summary = parsed.get("summary") or parsed.get("resumo")
+            raw_steps = parsed.get("steps") or parsed.get("passos") or []
+        if not isinstance(raw_steps, list):
+            continue
+
+        steps = []
+        for item in raw_steps[:8]:
+            if isinstance(item, dict):
+                title = str(item.get("title") or item.get("titulo") or item.get("step") or "").strip()
+                details = str(item.get("details") or item.get("detalhes") or item.get("description") or "").strip()
+                requires_confirmation = _boolish(
+                    item.get("requires_confirmation")
+                    if "requires_confirmation" in item
+                    else item.get("requer_confirmacao", item.get("confirmacao"))
+                )
+            else:
+                title = str(item).strip()
+                details = ""
+                requires_confirmation = False
+
+            combined = f"{title} {details}"
+            if not title:
+                continue
+            steps.append({
+                "title": title[:180],
+                "details": details[:500] or None,
+                "requires_confirmation": requires_confirmation or _is_sensitive_mission_action(combined),
+            })
+
+        if steps:
+            return summary or "Plano criado pelo Gemini.", steps
+
+    return _fallback_mission_plan(goal)
+
+
+def _generate_mission_plan(user_id, goal):
+    context = _build_assistant_context(user_id, goal)
+    prompt_parts = [
+        "Voce e um assistente pessoal em modo agente.",
+        "Quebre a meta do usuario em 3 a 8 passos concretos, verificaveis e ordenados.",
+        "Nao execute nenhuma acao externa. Apenas planeje.",
+        "Marque requires_confirmation como true quando o passo envolver enviar mensagens/e-mails, criar eventos, apagar dados, pagar, comprar, publicar, alterar sistemas externos ou qualquer acao sensivel.",
+        "Responda somente JSON valido neste formato:",
+        '{"summary":"resumo curto","steps":[{"title":"passo","details":"detalhes","requires_confirmation":false}]}',
+    ]
+    if context:
+        prompt_parts.append(f"Contexto auxiliar:\n{context}")
+    prompt_parts.append(f"Meta do usuario:\n{goal}")
+
+    response = get_gemini_response("\n\n".join(prompt_parts))
+    if response.startswith("Error") or response.startswith("⚠️"):
+        return _fallback_mission_plan(goal)
+    return _parse_mission_plan_response(response, goal)
+
+
+def _mission_progress_counts(mission):
+    steps = mission.get("steps", [])
+    done = len([step for step in steps if step["status"] == "done"])
+    skipped = len([step for step in steps if step["status"] == "skipped"])
+    blocked = len([step for step in steps if step["status"] == "blocked"])
+    total = len(steps)
+    return done, skipped, blocked, total
+
+
+def _format_mission_step(step):
+    status = step["status"]
+    marker = ""
+    if step["requires_confirmation"] and not step.get("confirmed_at"):
+        marker = " | requer confirmacao"
+    elif step.get("confirmed_at"):
+        marker = " | confirmado"
+
+    details = f"\n   {step['details']}" if step.get("details") else ""
+    checkpoint = f"\n   Checkpoint: {step['checkpoint_note']}" if step.get("checkpoint_note") else ""
+    return f"{step['step_number']}. [{status}] {step['title']}{marker}{details}{checkpoint}"
+
+
+def _format_mission_full(mission):
+    done, skipped, blocked, total = _mission_progress_counts(mission)
+    lines = [
+        f"Missao #{mission['id']} [{mission['status']}]",
+        f"Meta: {mission['goal']}",
+    ]
+    if mission.get("summary"):
+        lines.append(f"Resumo: {mission['summary']}")
+    lines.append(f"Progresso: {done}/{total} concluido(s), {skipped} pulado(s), {blocked} bloqueado(s).")
+    lines.append(f"Passo atual: {mission.get('current_step') or '-'}")
+    lines.append("")
+    lines.append("Plano:")
+    lines.extend(_format_mission_step(step) for step in mission.get("steps", []))
+
+    checkpoints = mission.get("checkpoints") or []
+    if checkpoints:
+        lines.append("")
+        lines.append("Ultimos checkpoints:")
+        for checkpoint in checkpoints[:5]:
+            step = f" passo {checkpoint['step_number']}" if checkpoint.get("step_number") else ""
+            note = f": {checkpoint['note']}" if checkpoint.get("note") else ""
+            lines.append(f"- {checkpoint['event_type']}{step}{note}")
+
+    lines.append("")
+    lines.append("Use /mission_step <missao> <passo> <start|done|block|skip> [nota].")
+    lines.append("Passos sensiveis precisam de /mission_confirm <missao> <passo> antes de iniciar ou concluir.")
+    return "\n".join(lines)
+
+
+def _format_mission_list(missions):
+    if not missions:
+        return "Nenhuma missao encontrada."
+
+    lines = ["Missoes:"]
+    for mission in missions:
+        lines.append(
+            f"{mission['id']}. [{mission['status']}] {mission['goal']} "
+            f"({mission.get('done_steps', 0)}/{mission.get('total_steps', 0)})"
+        )
+    return "\n".join(lines)
+
+
+def _current_or_next_step(mission):
+    steps = mission.get("steps", [])
+    current_number = mission.get("current_step")
+    for step in steps:
+        if step["step_number"] == current_number and step["status"] not in {"done", "skipped"}:
+            return step
+    for step in steps:
+        if step["status"] not in {"done", "skipped"}:
+            return step
+    return None
+
+
+def _compact_mission_state(mission):
+    lines = [
+        f"Missao #{mission['id']}: {mission['goal']}",
+        f"Status: {mission['status']}",
+    ]
+    if mission.get("summary"):
+        lines.append(f"Resumo: {mission['summary']}")
+    lines.append("Passos:")
+    lines.extend(_format_mission_step(step) for step in mission.get("steps", []))
+    return "\n".join(lines)
+
+
+def _build_mission_report(mission):
+    done, skipped, blocked, total = _mission_progress_counts(mission)
+    next_step = _current_or_next_step(mission)
+    fallback_lines = [
+        f"Relatorio da missao #{mission['id']}",
+        f"Progresso: {done}/{total} concluido(s), {skipped} pulado(s), {blocked} bloqueado(s).",
+    ]
+    if next_step:
+        fallback_lines.append(f"Proximo passo: {next_step['step_number']}. {next_step['title']}")
+        if next_step["requires_confirmation"] and not next_step.get("confirmed_at"):
+            fallback_lines.append("Este proximo passo exige confirmacao antes de execucao.")
+    else:
+        fallback_lines.append("Nao ha proximos passos pendentes.")
+    fallback = "\n".join(fallback_lines)
+
+    prompt = (
+        "Gere um relatorio curto em portugues do Brasil sobre esta missao.\n"
+        "Inclua progresso, bloqueios, riscos e proximo passo. Nao invente acoes executadas.\n\n"
+        f"{_compact_mission_state(mission)}"
+    )
+    response = get_gemini_response(prompt)
+    if response.startswith("Error") or response.startswith("⚠️"):
+        return fallback
+    return response
+
+
+async def _create_mission_from_goal(update, user_id, goal):
+    if not goal:
+        await update.message.reply_text("Uso: /mission <meta>")
+        return
+
+    summary, steps = _generate_mission_plan(user_id, goal)
+    mission_id = create_mission(user_id, goal, steps, summary=summary)
+    mission = get_mission(user_id, mission_id)
+    await update.message.reply_text(_format_mission_full(mission))
 
 
 async def _create_task_from_text(update, user_id, text):
@@ -1062,7 +1409,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /memory clear - Delete all your memories
 /forget <id> - Delete one memory
 /knowledge search <query> - Search semantic memory/RAG base
-/knowledge index_docs - Index project docs into the local vector DB
+/knowledge index_docs - Index project docs into the vector DB
+/mission <goal> - Create an agent mission with planned steps
+/missions [ativas|concluidas|todas] - List missions
+/mission_status <id> - Show mission state and checkpoints
+/mission_step <id> <step> <start|done|block|skip> [note] - Update a mission checkpoint
+/mission_confirm <id> <step> - Confirm a sensitive mission step
+/mission_report <id> - Generate a progress report
 /emails [list|summary|index|search] - Smart Gmail summaries and RAG search
 /email_draft <email_id> <instruction> - Create a local draft, without sending
 /drafts - List local pending email drafts
@@ -1082,7 +1435,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - Agenda inteligente: gero briefing diario e preparo eventos com confirmacao.
 - E-mails inteligentes: resumo, prioridade heuristica e busca semantica via RAG.
 - Drive/Docs inteligentes: indexo arquivos e resumo documentos Google Docs.
-- RAG local: uso uma base vetorial em SQLite para recuperar memorias, tarefas e docs relevantes.
+- Modo agente: transformo metas em missoes com passos, checkpoints e relatorios.
+- RAG: uso a base vetorial configurada para recuperar memorias, tarefas e docs relevantes.
 - Send me any text to chat with AI.
 - Send me a photo to analyze it.
 - Send me a voice note to transcribe and answer.
@@ -1113,6 +1467,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     event_text = _extract_event_text(user_text)
     if event_text:
         await _create_pending_event_from_text(update, user_id, chat_id, event_text)
+        return
+
+    mission_goal = _extract_mission_goal(user_text)
+    if mission_goal:
+        await _create_mission_from_goal(update, user_id, mission_goal)
         return
 
     history = get_conversation_history(user_id)
@@ -1180,6 +1539,11 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         event_text = _extract_event_text(text)
         if event_text:
             await _create_pending_event_from_text(update, user_id, chat_id, event_text)
+            return
+
+        mission_goal = _extract_mission_goal(text)
+        if mission_goal:
+            await _create_mission_from_goal(update, user_id, mission_goal)
             return
 
         history = get_conversation_history(user_id)
@@ -1556,8 +1920,10 @@ async def knowledge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.args:
         total = count_knowledge_items(user_id)
+        backend = get_knowledge_backend()
         await update.message.reply_text(
-            "Base semantica local ativa.\n"
+            "Base semantica ativa.\n"
+            f"Backend vetorial: {backend}\n"
             f"Itens disponiveis para voce: {total}\n"
             "Uso:\n"
             "/knowledge search <consulta>\n"
@@ -1754,6 +2120,211 @@ async def draft_delete_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"Rascunho {draft_id} arquivado.")
     else:
         await update.message.reply_text("Rascunho nao encontrado.")
+
+
+async def mission_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    upsert_user_settings(user_id, chat_id=update.effective_chat.id)
+
+    if not context.args:
+        await update.message.reply_text(
+            "Uso:\n"
+            "/mission <meta>\n"
+            "/mission status <id>\n"
+            "/mission next <id>\n"
+            "/mission pause|resume|complete|archive <id>\n"
+            "/mission report <id>"
+        )
+        return
+
+    action = context.args[0].lower()
+    if action in {"status", "ver", "show"}:
+        if len(context.args) < 2:
+            await update.message.reply_text("Uso: /mission status <id>")
+            return
+        try:
+            mission_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("ID de missao invalido.")
+            return
+        mission = get_mission(user_id, mission_id)
+        await update.message.reply_text(_format_mission_full(mission) if mission else "Missao nao encontrada.")
+        return
+
+    if action in {"next", "proximo", "próximo"}:
+        if len(context.args) < 2:
+            await update.message.reply_text("Uso: /mission next <id>")
+            return
+        try:
+            mission_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("ID de missao invalido.")
+            return
+        mission = get_mission(user_id, mission_id)
+        if not mission:
+            await update.message.reply_text("Missao nao encontrada.")
+            return
+        step = _current_or_next_step(mission)
+        if not step:
+            await update.message.reply_text("Nao ha passos pendentes nessa missao.")
+            return
+        await update.message.reply_text("Proximo passo:\n" + _format_mission_step(step))
+        return
+
+    if action in {"report", "relatorio", "relatório"}:
+        if len(context.args) < 2:
+            await update.message.reply_text("Uso: /mission report <id>")
+            return
+        try:
+            mission_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("ID de missao invalido.")
+            return
+        await _send_mission_report(update, user_id, mission_id)
+        return
+
+    status_actions = {
+        "pause": "paused",
+        "pausar": "paused",
+        "resume": "active",
+        "retomar": "active",
+        "complete": "completed",
+        "concluir": "completed",
+        "archive": "archived",
+        "arquivar": "archived",
+    }
+    if action in status_actions:
+        if len(context.args) < 2:
+            await update.message.reply_text(f"Uso: /mission {action} <id>")
+            return
+        try:
+            mission_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("ID de missao invalido.")
+            return
+        note = " ".join(context.args[2:]).strip() or None
+        if update_mission_status(user_id, mission_id, status_actions[action], note=note):
+            await update.message.reply_text(f"Missao {mission_id} atualizada para {status_actions[action]}.")
+        else:
+            await update.message.reply_text("Missao nao encontrada.")
+        return
+
+    goal = " ".join(context.args).strip()
+    await _create_mission_from_goal(update, user_id, goal)
+
+
+async def missions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    status = "active"
+    if context.args:
+        status = MISSION_STATUS_ALIASES.get(context.args[0].lower(), context.args[0].lower())
+    missions = list_missions(user_id, status=status)
+    await update.message.reply_text(_format_mission_list(missions))
+
+
+async def mission_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text("Uso: /mission_status <id>")
+        return
+    try:
+        mission_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID de missao invalido.")
+        return
+    mission = get_mission(user_id, mission_id)
+    await update.message.reply_text(_format_mission_full(mission) if mission else "Missao nao encontrada.")
+
+
+async def mission_step_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if len(context.args) < 3:
+        await update.message.reply_text("Uso: /mission_step <missao> <passo> <start|done|block|skip> [nota]")
+        return
+
+    try:
+        mission_id = int(context.args[0])
+        step_number = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("ID de missao ou passo invalido.")
+        return
+
+    action = context.args[2].lower()
+    status = MISSION_STEP_ACTIONS.get(action)
+    if not status:
+        await update.message.reply_text("Acao invalida. Use start, done, block, skip ou todo.")
+        return
+
+    note = " ".join(context.args[3:]).strip() or None
+    result = update_mission_step(user_id, mission_id, step_number, status, note=note)
+    if result.get("not_found"):
+        await update.message.reply_text("Missao ou passo nao encontrado.")
+        return
+    if result.get("needs_confirmation"):
+        step = result["step"]
+        await update.message.reply_text(
+            "Este passo exige confirmacao antes de iniciar ou concluir:\n"
+            f"{step['step_number']}. {step['title']}\n"
+            f"Confirme com /mission_confirm {mission_id} {step_number}"
+        )
+        return
+
+    mission = get_mission(user_id, mission_id)
+    if not mission:
+        await update.message.reply_text("Missao atualizada, mas nao consegui recarregar o status.")
+        return
+    updated_step = next((step for step in mission["steps"] if step["step_number"] == step_number), None)
+    message = "Checkpoint registrado."
+    if updated_step:
+        message += "\n" + _format_mission_step(updated_step)
+    if mission["status"] == "completed":
+        message += "\n\nMissao concluida."
+    await update.message.reply_text(message)
+
+
+async def mission_confirm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if len(context.args) < 2:
+        await update.message.reply_text("Uso: /mission_confirm <missao> <passo> [nota]")
+        return
+    try:
+        mission_id = int(context.args[0])
+        step_number = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("ID de missao ou passo invalido.")
+        return
+
+    note = " ".join(context.args[2:]).strip() or None
+    result = confirm_mission_step(user_id, mission_id, step_number, note=note)
+    if result.get("not_found"):
+        await update.message.reply_text("Missao ou passo nao encontrado.")
+        return
+    await update.message.reply_text(
+        f"Passo {step_number} confirmado. Agora voce pode usar /mission_step {mission_id} {step_number} start ou done."
+    )
+
+
+async def _send_mission_report(update, user_id, mission_id):
+    mission = get_mission(user_id, mission_id)
+    if not mission:
+        await update.message.reply_text("Missao nao encontrada.")
+        return
+    report = _build_mission_report(mission)
+    save_mission_report(user_id, mission_id, report)
+    await update.message.reply_text(report)
+
+
+async def mission_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text("Uso: /mission_report <id>")
+        return
+    try:
+        mission_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID de missao invalido.")
+        return
+    await _send_mission_report(update, user_id, mission_id)
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

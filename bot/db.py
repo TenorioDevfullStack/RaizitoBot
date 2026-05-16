@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -7,8 +8,20 @@ from datetime import date, datetime, time, timedelta
 
 from dotenv import load_dotenv
 from bot.rag import cosine_similarity, embed_text
+from bot.vector_store import (
+    active_vector_backend,
+    supabase_clear_knowledge_source,
+    supabase_count_knowledge_items,
+    supabase_delete_knowledge_item,
+    supabase_fallback_to_sqlite,
+    supabase_search_knowledge,
+    supabase_upsert_knowledge_item,
+    use_supabase_vector_store,
+)
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def _default_db_path():
@@ -100,6 +113,37 @@ def _email_draft_knowledge_content(draft):
     return "\n".join(lines)
 
 
+def _mission_step_knowledge_line(step):
+    marker = "confirmacao necessaria" if step.get("requires_confirmation") else "sem confirmacao"
+    details = step.get("details")
+    line = (
+        f"{step.get('step_number')}. [{step.get('status')}] {step.get('title')} "
+        f"({marker})"
+    )
+    if details:
+        line += f" - {details}"
+    if step.get("checkpoint_note"):
+        line += f" Ultimo checkpoint: {step['checkpoint_note']}"
+    return line
+
+
+def _mission_knowledge_content(mission, steps=None):
+    lines = [
+        f"Missao: {mission.get('goal')}",
+        f"Status: {mission.get('status')}",
+    ]
+    if mission.get("summary"):
+        lines.append(f"Resumo: {mission['summary']}")
+    if mission.get("current_step"):
+        lines.append(f"Passo atual: {mission['current_step']}")
+    if steps:
+        lines.append("Plano:")
+        lines.extend(_mission_step_knowledge_line(step) for step in steps)
+    if mission.get("last_report"):
+        lines.append(f"Ultimo relatorio: {mission['last_report']}")
+    return "\n".join(lines)
+
+
 def _upsert_knowledge_item(
     cursor,
     user_id,
@@ -138,6 +182,20 @@ def _upsert_knowledge_item(
             now,
         ),
     )
+    if use_supabase_vector_store():
+        try:
+            supabase_upsert_knowledge_item(
+                user_id,
+                source_type,
+                source_id,
+                title,
+                content,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            if not supabase_fallback_to_sqlite():
+                raise
+            logger.warning("Supabase vector upsert failed; keeping SQLite fallback: %s", exc)
 
 
 def _delete_knowledge_item(cursor, user_id, source_type, source_id):
@@ -148,6 +206,13 @@ def _delete_knowledge_item(cursor, user_id, source_type, source_id):
         """,
         (user_id, source_type, str(source_id)),
     )
+    if use_supabase_vector_store():
+        try:
+            supabase_delete_knowledge_item(user_id, source_type, source_id)
+        except Exception as exc:
+            if not supabase_fallback_to_sqlite():
+                raise
+            logger.warning("Supabase vector delete failed; keeping SQLite fallback: %s", exc)
 
 
 def _normalize_attendees(attendees):
@@ -357,6 +422,77 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT
         )
+    ''')
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS missions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            goal TEXT NOT NULL,
+            summary TEXT,
+            status TEXT DEFAULT 'active',
+            current_step INTEGER DEFAULT 1,
+            last_report TEXT,
+            completed_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT
+        )
+    ''')
+    _add_column_if_missing(c, "missions", "summary", "summary TEXT")
+    _add_column_if_missing(c, "missions", "current_step", "current_step INTEGER DEFAULT 1")
+    _add_column_if_missing(c, "missions", "last_report", "last_report TEXT")
+    _add_column_if_missing(c, "missions", "completed_at", "completed_at TEXT")
+    _add_column_if_missing(c, "missions", "updated_at", "updated_at TEXT")
+
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_missions_user_status
+        ON missions (user_id, status)
+    ''')
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS mission_steps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            step_number INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            details TEXT,
+            status TEXT DEFAULT 'pending',
+            requires_confirmation BOOLEAN DEFAULT 0,
+            confirmed_at TEXT,
+            checkpoint_note TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT,
+            UNIQUE(mission_id, step_number)
+        )
+    ''')
+    _add_column_if_missing(c, "mission_steps", "details", "details TEXT")
+    _add_column_if_missing(c, "mission_steps", "status", "status TEXT DEFAULT 'pending'")
+    _add_column_if_missing(c, "mission_steps", "requires_confirmation", "requires_confirmation BOOLEAN DEFAULT 0")
+    _add_column_if_missing(c, "mission_steps", "confirmed_at", "confirmed_at TEXT")
+    _add_column_if_missing(c, "mission_steps", "checkpoint_note", "checkpoint_note TEXT")
+    _add_column_if_missing(c, "mission_steps", "updated_at", "updated_at TEXT")
+
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_mission_steps_mission
+        ON mission_steps (mission_id, step_number)
+    ''')
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS mission_checkpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            step_number INTEGER,
+            event_type TEXT NOT NULL,
+            note TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_mission_checkpoints_mission
+        ON mission_checkpoints (mission_id, created_at)
     ''')
 
     conn.commit()
@@ -758,6 +894,13 @@ def clear_memories(user_id: int):
         "DELETE FROM knowledge_items WHERE user_id = ? AND source_type = ?",
         (user_id, "memory"),
     )
+    if use_supabase_vector_store():
+        try:
+            supabase_clear_knowledge_source(user_id, "memory")
+        except Exception as exc:
+            if not supabase_fallback_to_sqlite():
+                raise
+            logger.warning("Supabase vector clear failed; keeping SQLite fallback: %s", exc)
     conn.commit()
     conn.close()
     return rows_affected
@@ -786,12 +929,27 @@ def clear_knowledge_source(user_id, source_type):
         (user_id, source_type),
     )
     rows_affected = c.rowcount
+    if use_supabase_vector_store():
+        try:
+            supabase_clear_knowledge_source(user_id, source_type)
+        except Exception as exc:
+            if not supabase_fallback_to_sqlite():
+                raise
+            logger.warning("Supabase vector clear failed; keeping SQLite fallback: %s", exc)
     conn.commit()
     conn.close()
     return rows_affected
 
 
 def search_knowledge(user_id, query, limit=5, source_type=None, min_score=0.05):
+    if use_supabase_vector_store():
+        try:
+            return supabase_search_knowledge(user_id, query, limit, source_type, min_score)
+        except Exception as exc:
+            if not supabase_fallback_to_sqlite():
+                raise
+            logger.warning("Supabase vector search failed; using SQLite fallback: %s", exc)
+
     conn = _connect()
     c = conn.cursor()
     sql = """
@@ -838,6 +996,14 @@ def search_knowledge(user_id, query, limit=5, source_type=None, min_score=0.05):
 
 
 def count_knowledge_items(user_id=None):
+    if use_supabase_vector_store():
+        try:
+            return supabase_count_knowledge_items(user_id)
+        except Exception as exc:
+            if not supabase_fallback_to_sqlite():
+                raise
+            logger.warning("Supabase vector count failed; using SQLite fallback: %s", exc)
+
     conn = _connect()
     c = conn.cursor()
     if user_id is None:
@@ -850,6 +1016,10 @@ def count_knowledge_items(user_id=None):
     count = c.fetchone()[0]
     conn.close()
     return count
+
+
+def get_knowledge_backend():
+    return active_vector_backend()
 
 
 def upsert_user_settings(
@@ -1238,3 +1408,404 @@ def update_email_draft_status(draft_id, user_id, status):
     conn.commit()
     conn.close()
     return rows_affected > 0
+
+
+def _row_to_mission(row):
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "goal": row[2],
+        "summary": row[3],
+        "status": row[4],
+        "current_step": row[5],
+        "last_report": row[6],
+        "completed_at": row[7],
+        "created_at": row[8],
+        "updated_at": row[9],
+    }
+
+
+def _row_to_mission_step(row):
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "mission_id": row[1],
+        "user_id": row[2],
+        "step_number": row[3],
+        "title": row[4],
+        "details": row[5],
+        "status": row[6],
+        "requires_confirmation": bool(row[7]),
+        "confirmed_at": row[8],
+        "checkpoint_note": row[9],
+        "created_at": row[10],
+        "updated_at": row[11],
+    }
+
+
+def _row_to_mission_checkpoint(row):
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "mission_id": row[1],
+        "user_id": row[2],
+        "step_number": row[3],
+        "event_type": row[4],
+        "note": row[5],
+        "created_at": row[6],
+    }
+
+
+def _get_mission_for_cursor(cursor, user_id, mission_id):
+    cursor.execute(
+        """
+        SELECT id, user_id, goal, summary, status, current_step,
+               last_report, completed_at, created_at, updated_at
+        FROM missions
+        WHERE id = ? AND user_id = ?
+        """,
+        (mission_id, user_id),
+    )
+    return _row_to_mission(cursor.fetchone())
+
+
+def _get_mission_steps_for_cursor(cursor, user_id, mission_id):
+    cursor.execute(
+        """
+        SELECT id, mission_id, user_id, step_number, title, details, status,
+               requires_confirmation, confirmed_at, checkpoint_note, created_at, updated_at
+        FROM mission_steps
+        WHERE mission_id = ? AND user_id = ?
+        ORDER BY step_number ASC
+        """,
+        (mission_id, user_id),
+    )
+    return [_row_to_mission_step(row) for row in cursor.fetchall()]
+
+
+def _get_mission_step_for_cursor(cursor, user_id, mission_id, step_number):
+    cursor.execute(
+        """
+        SELECT id, mission_id, user_id, step_number, title, details, status,
+               requires_confirmation, confirmed_at, checkpoint_note, created_at, updated_at
+        FROM mission_steps
+        WHERE mission_id = ? AND user_id = ? AND step_number = ?
+        """,
+        (mission_id, user_id, step_number),
+    )
+    return _row_to_mission_step(cursor.fetchone())
+
+
+def _add_mission_checkpoint(cursor, user_id, mission_id, step_number, event_type, note=None):
+    cursor.execute(
+        """
+        INSERT INTO mission_checkpoints (
+            mission_id, user_id, step_number, event_type, note, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (mission_id, user_id, step_number, event_type, note, datetime.utcnow().isoformat()),
+    )
+
+
+def _refresh_mission_knowledge(cursor, user_id, mission_id):
+    mission = _get_mission_for_cursor(cursor, user_id, mission_id)
+    if not mission:
+        return
+    steps = _get_mission_steps_for_cursor(cursor, user_id, mission_id)
+    _upsert_knowledge_item(
+        cursor,
+        user_id,
+        "mission",
+        mission_id,
+        f"Missao {mission_id}: {mission['goal'][:80]}",
+        _mission_knowledge_content(mission, steps),
+        metadata={
+            "mission_id": mission_id,
+            "status": mission["status"],
+            "current_step": mission.get("current_step"),
+        },
+    )
+
+
+def create_mission(user_id, goal, steps, summary=None):
+    conn = _connect()
+    c = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    c.execute(
+        """
+        INSERT INTO missions (
+            user_id, goal, summary, status, current_step, updated_at
+        )
+        VALUES (?, ?, ?, 'active', 1, ?)
+        """,
+        (user_id, goal, summary, now),
+    )
+    mission_id = c.lastrowid
+
+    normalized_steps = steps or []
+    if not normalized_steps:
+        normalized_steps = [{"title": "Definir o proximo passo", "details": goal}]
+
+    for index, step in enumerate(normalized_steps, start=1):
+        if isinstance(step, dict):
+            title = str(step.get("title") or step.get("step") or "").strip()
+            details = str(step.get("details") or step.get("description") or "").strip() or None
+            requires_confirmation = bool(step.get("requires_confirmation"))
+        else:
+            title = str(step).strip()
+            details = None
+            requires_confirmation = False
+
+        c.execute(
+            """
+            INSERT INTO mission_steps (
+                mission_id, user_id, step_number, title, details,
+                status, requires_confirmation, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                mission_id,
+                user_id,
+                index,
+                title or f"Passo {index}",
+                details,
+                int(requires_confirmation),
+                now,
+            ),
+        )
+
+    _add_mission_checkpoint(c, user_id, mission_id, None, "created", "Missao criada.")
+    _refresh_mission_knowledge(c, user_id, mission_id)
+    conn.commit()
+    conn.close()
+    return mission_id
+
+
+def get_mission(user_id, mission_id, include_checkpoints=True):
+    conn = _connect()
+    c = conn.cursor()
+    mission = _get_mission_for_cursor(c, user_id, mission_id)
+    if not mission:
+        conn.close()
+        return None
+
+    mission["steps"] = _get_mission_steps_for_cursor(c, user_id, mission_id)
+    if include_checkpoints:
+        c.execute(
+            """
+            SELECT id, mission_id, user_id, step_number, event_type, note, created_at
+            FROM mission_checkpoints
+            WHERE mission_id = ? AND user_id = ?
+            ORDER BY datetime(created_at) DESC, id DESC
+            LIMIT 10
+            """,
+            (mission_id, user_id),
+        )
+        rows = c.fetchall()
+        mission["checkpoints"] = [_row_to_mission_checkpoint(row) for row in rows]
+    conn.close()
+    return mission
+
+
+def list_missions(user_id, status="active", limit=10):
+    conn = _connect()
+    c = conn.cursor()
+    query = """
+        SELECT
+            m.id, m.user_id, m.goal, m.summary, m.status, m.current_step,
+            m.last_report, m.completed_at, m.created_at, m.updated_at,
+            COUNT(s.id) AS total_steps,
+            COALESCE(SUM(CASE WHEN s.status = 'done' THEN 1 ELSE 0 END), 0) AS done_steps
+        FROM missions AS m
+        LEFT JOIN mission_steps AS s ON s.mission_id = m.id AND s.user_id = m.user_id
+        WHERE m.user_id = ?
+    """
+    params = [user_id]
+    if status and status != "all":
+        query += " AND m.status = ?"
+        params.append(status)
+    query += """
+        GROUP BY m.id
+        ORDER BY datetime(m.updated_at) DESC, m.id DESC
+        LIMIT ?
+    """
+    params.append(limit)
+    c.execute(query, params)
+    missions = []
+    for row in c.fetchall():
+        mission = _row_to_mission(row[:10])
+        mission["total_steps"] = row[10]
+        mission["done_steps"] = row[11]
+        missions.append(mission)
+    conn.close()
+    return missions
+
+
+def update_mission_status(user_id, mission_id, status, note=None):
+    conn = _connect()
+    c = conn.cursor()
+    mission = _get_mission_for_cursor(c, user_id, mission_id)
+    if not mission:
+        conn.close()
+        return False
+
+    now = datetime.utcnow().isoformat()
+    completed_at = now if status == "completed" else None
+    if status == "completed":
+        c.execute(
+            """
+            UPDATE missions
+            SET status = ?, completed_at = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (status, completed_at, now, mission_id, user_id),
+        )
+    else:
+        c.execute(
+            """
+            UPDATE missions
+            SET status = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (status, now, mission_id, user_id),
+        )
+    _add_mission_checkpoint(c, user_id, mission_id, None, f"mission_{status}", note)
+    _refresh_mission_knowledge(c, user_id, mission_id)
+    conn.commit()
+    conn.close()
+    return True
+
+
+def confirm_mission_step(user_id, mission_id, step_number, note=None):
+    conn = _connect()
+    c = conn.cursor()
+    step = _get_mission_step_for_cursor(c, user_id, mission_id, step_number)
+    if not step:
+        conn.close()
+        return {"confirmed": False, "not_found": True}
+
+    now = datetime.utcnow().isoformat()
+    c.execute(
+        """
+        UPDATE mission_steps
+        SET confirmed_at = ?, updated_at = ?
+        WHERE mission_id = ? AND user_id = ? AND step_number = ?
+        """,
+        (now, now, mission_id, user_id, step_number),
+    )
+    _add_mission_checkpoint(
+        c,
+        user_id,
+        mission_id,
+        step_number,
+        "confirmed",
+        note or "Passo sensivel confirmado pelo usuario.",
+    )
+    _refresh_mission_knowledge(c, user_id, mission_id)
+    conn.commit()
+    conn.close()
+    return {"confirmed": True}
+
+
+def update_mission_step(user_id, mission_id, step_number, status, note=None):
+    conn = _connect()
+    c = conn.cursor()
+    step = _get_mission_step_for_cursor(c, user_id, mission_id, step_number)
+    if not step:
+        conn.close()
+        return {"updated": False, "not_found": True}
+
+    if (
+        status in {"in_progress", "done"}
+        and step["requires_confirmation"]
+        and not step.get("confirmed_at")
+    ):
+        conn.close()
+        return {"updated": False, "needs_confirmation": True, "step": step}
+
+    now = datetime.utcnow().isoformat()
+    c.execute(
+        """
+        UPDATE mission_steps
+        SET status = ?, checkpoint_note = COALESCE(?, checkpoint_note), updated_at = ?
+        WHERE mission_id = ? AND user_id = ? AND step_number = ?
+        """,
+        (status, note, now, mission_id, user_id, step_number),
+    )
+    _add_mission_checkpoint(c, user_id, mission_id, step_number, f"step_{status}", note)
+
+    if status in {"in_progress", "blocked"}:
+        c.execute(
+            """
+            UPDATE missions
+            SET current_step = ?, status = 'active', updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (step_number, now, mission_id, user_id),
+        )
+    elif status in {"done", "skipped"}:
+        c.execute(
+            """
+            SELECT step_number
+            FROM mission_steps
+            WHERE mission_id = ? AND user_id = ?
+              AND status NOT IN ('done', 'skipped')
+            ORDER BY step_number ASC
+            LIMIT 1
+            """,
+            (mission_id, user_id),
+        )
+        next_row = c.fetchone()
+        if next_row:
+            c.execute(
+                """
+                UPDATE missions
+                SET current_step = ?, status = 'active', updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (next_row[0], now, mission_id, user_id),
+            )
+        else:
+            c.execute(
+                """
+                UPDATE missions
+                SET status = 'completed', completed_at = ?, updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (now, now, mission_id, user_id),
+            )
+
+    _refresh_mission_knowledge(c, user_id, mission_id)
+    conn.commit()
+    conn.close()
+    return {"updated": True}
+
+
+def save_mission_report(user_id, mission_id, report):
+    conn = _connect()
+    c = conn.cursor()
+    mission = _get_mission_for_cursor(c, user_id, mission_id)
+    if not mission:
+        conn.close()
+        return False
+
+    now = datetime.utcnow().isoformat()
+    c.execute(
+        """
+        UPDATE missions
+        SET last_report = ?, updated_at = ?
+        WHERE id = ? AND user_id = ?
+        """,
+        (report, now, mission_id, user_id),
+    )
+    _add_mission_checkpoint(c, user_id, mission_id, None, "report", report[:500])
+    _refresh_mission_knowledge(c, user_id, mission_id)
+    conn.commit()
+    conn.close()
+    return True

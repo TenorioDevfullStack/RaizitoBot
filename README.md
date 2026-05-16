@@ -11,10 +11,12 @@ Bot do Telegram com integração de IA (Google Gemini) que oferece conversação
 - 🖼️ **Análise de Imagens**: Envie fotos e receba análises da IA
 - 🧠 **Memória de Conversa**: Contexto das últimas interações para respostas mais coerentes
 - 🧩 **Memória Pessoal Persistente**: Salve fatos importantes com `/remember` ou mensagens como "lembre que..."
-- 🧭 **RAG Local**: Busca semântica em memórias, tarefas, notas e documentos do projeto usando SQLite como banco vetorial
+- 🧭 **RAG Vetorial**: Busca semântica em memórias, tarefas, notas e documentos usando SQLite local ou Supabase/pgvector
+- 🧱 **Modo Agente**: Transforme metas em missões com passos, checkpoints, confirmações e relatórios
 - 🗓️ **Briefing Diário**: Combine agenda, tarefas, memória e RAG com `/today` e resumos automáticos
 - 📧 **E-mails Inteligentes**: Liste, resuma e indexe Gmail no RAG sem enviar respostas automaticamente
 - 📁 **Drive/Docs Inteligentes**: Indexe arquivos do Drive e resuma Google Docs com RAG
+- 🔌 **MCP Google**: Servidor MCP para Calendar, Maps, Drive, Docs e Gmail
 - 📊 **Status do App**: Monitore o status do bot
 
 ## 🚀 Deploy em Produção
@@ -67,6 +69,10 @@ Para configurar as chaves de API necessárias (Google Search, Gmail, Drive, etc.
    - `GOOGLE_SERVICE_ACCOUNT_FILE`: JSON do service account com acesso a Gmail/Drive/Calendar/Docs
    - `GOOGLE_DELEGATED_USER`: (opcional) usuário a ser impersonado ao usar o service account
    - `GOOGLE_CALENDAR_TIMEZONE`: fuso usado ao criar eventos (padrão: `America/Sao_Paulo`)
+   - `RAG_VECTOR_BACKEND`: use `supabase` para conectar ao Supabase pgvector
+   - `RAG_SUPABASE_FALLBACK_TO_SQLITE`: use `true` para fallback local se Supabase falhar
+   - `SUPABASE_URL`: Project URL do Supabase
+   - `SUPABASE_SERVICE_ROLE_KEY`: service role secret do Supabase, apenas no servidor
 
 4. **Execute o bot**
    ```bash
@@ -109,10 +115,16 @@ Se não usar `TELEGRAM_WEBHOOK_SECRET`, remova o parâmetro `secret_token`.
 | `/memory delete <id>` | Apaga uma memória específica |
 | `/memory clear` | Apaga todas as suas memórias |
 | `/forget <id>` | Apaga uma memória específica |
-| `/knowledge` | Mostra status da base semântica local |
+| `/knowledge` | Mostra status da base semântica |
 | `/knowledge search <consulta>` | Busca memórias, tarefas, notas e docs por significado |
 | `/knowledge add <texto>` | Salva uma nota diretamente na base semântica |
 | `/knowledge index_docs` | Indexa documentos do projeto na base vetorial |
+| `/mission <meta>` | Cria uma missão de agente com passos planejados |
+| `/missions [ativas\|concluidas\|todas]` | Lista missões por status |
+| `/mission_status <id>` | Mostra estado, passos e checkpoints de uma missão |
+| `/mission_step <id> <passo> <start\|done\|block\|skip> [nota]` | Registra progresso/checkpoint em um passo |
+| `/mission_confirm <id> <passo>` | Confirma um passo sensível antes de executar ou concluir |
+| `/mission_report <id>` | Gera e salva um relatório de progresso da missão |
 | `/emails list [query]` | Lista e-mails recentes com ID, prioridade, remetente, assunto, data e trecho |
 | `/emails summary [query]` | Resume e-mails recentes com Gemini e indexa no RAG |
 | `/emails index [query]` | Indexa e-mails recentes no RAG |
@@ -153,9 +165,38 @@ Além dos comandos, você pode:
 Recorrências simples aceitas: `todo dia`, `semanal`/`toda semana` e `mensal`/`todo mês`.
 Os lembretes usam o `job_queue` do python-telegram-bot enquanto o bot estiver rodando em polling.
 
-### RAG local e banco vetorial
+### RAG e banco vetorial
 
-O bot mantém uma tabela `knowledge_items` no SQLite com vetores locais gerados por hashing. Essa primeira versão não depende de Chroma, Qdrant ou APIs externas de embedding.
+O bot usa as mesmas funções internas de RAG com dois backends possíveis:
+
+- `sqlite`: tabela local `knowledge_items`, útil para desenvolvimento e fallback.
+- `supabase`: tabela `knowledge_items` no Supabase com `pgvector`, acessada pela REST API do Supabase.
+
+Os vetores continuam sendo gerados localmente por hashing determinístico de 256 dimensões. Para ativar Supabase:
+
+1. Rode [supabase/knowledge_items.sql](supabase/knowledge_items.sql) no SQL Editor do Supabase.
+2. Configure no `.env`:
+
+```env
+RAG_VECTOR_BACKEND=supabase
+RAG_SUPABASE_FALLBACK_TO_SQLITE=true
+SUPABASE_URL=https://seu-projeto.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=sua_service_role_key
+```
+
+Use a `service_role_key` apenas no servidor. Ela não deve ser exposta em frontend.
+
+Para migrar itens já existentes do SQLite local para o Supabase:
+
+```bash
+python scripts/sync_knowledge_to_supabase.py
+```
+
+Para validar se o banco vetorial no Supabase está respondendo a escrita e busca:
+
+```bash
+python scripts/check_supabase_vector_store.py
+```
 
 Memórias e tarefas são indexadas automaticamente. Para indexar a documentação do projeto:
 
@@ -165,7 +206,31 @@ Memórias e tarefas são indexadas automaticamente. Para indexar a documentaçã
 /knowledge add Preferir respostas curtas quando eu estiver no celular
 ```
 
-Nas conversas normais, o bot busca itens relevantes nessa base e injeta o contexto recuperado no prompt do Gemini.
+Nas conversas normais, o bot busca itens relevantes nessa base e injeta o contexto recuperado no prompt do Gemini. Se Supabase estiver indisponível e `RAG_SUPABASE_FALLBACK_TO_SQLITE=true`, a busca cai para o SQLite local.
+
+### Modo agente
+
+```text
+/mission organizar lançamento da campanha da Loja X até sexta
+/missions
+/mission_status 1
+/mission_step 1 1 start alinhei escopo e prazo
+/mission_confirm 1 3 aprovado enviar rascunho ao cliente
+/mission_step 1 3 done rascunho preparado, aguardando revisão final
+/mission_report 1
+```
+
+O modo agente cria uma missão persistente no SQLite, divide a meta em passos com Gemini e usa um plano local de fallback quando a IA não estiver disponível. Cada atualização de passo vira um checkpoint. Passos que envolvem e-mail, agenda, pagamento, exclusão, publicação ou alteração externa são marcados como sensíveis e exigem `/mission_confirm` antes de iniciar ou concluir. Missões também entram no RAG para aparecerem como contexto em conversas futuras.
+
+### MCP Google
+
+O servidor MCP fica em `bot/mcp_google_server.py` e expõe ferramentas para Gmail, Drive, Docs, Calendar e Maps. Ele usa as mesmas credenciais do bot.
+
+```bash
+python -m bot.mcp_google_server
+```
+
+Em um cliente MCP, configure o comando acima a partir da raiz do projeto e preencha as variáveis do `.env.example`.
 
 ### Agenda e briefing diário
 
@@ -225,6 +290,8 @@ RaizitoBot/
 │   ├── db.py                  # Gerenciamento do banco de dados e memória de conversas
 │   ├── external_integration.py # Integrações externas
 │   ├── google_services.py     # Integrações Gmail/Drive/Calendar/Docs
+│   ├── google_maps.py         # Integrações Google Maps
+│   ├── mcp_google_server.py   # Servidor MCP Google
 │   ├── handlers.py            # Handlers do Telegram
 │   └── web_search.py          # Funcionalidade de busca web
 ├── main.py                    # Arquivo principal
@@ -232,6 +299,8 @@ RaizitoBot/
 ├── Dockerfile                 # Container Docker
 ├── docker-compose.yml         # Configuração Docker Compose
 ├── Procfile                   # Configuração para Railway/Heroku
+├── scripts/                   # Utilitários operacionais
+├── supabase/                  # SQL para Supabase Vector Store
 ├── .env.example               # Template de variáveis de ambiente
 ├── .gitignore                 # Arquivos ignorados pelo Git
 └── DEPLOY.md                  # Guia de deploy em produção

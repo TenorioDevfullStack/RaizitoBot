@@ -13,6 +13,8 @@ from bot.handlers import (
     gmail_command, drive_command, calendar_command, docs_command,
     remember_command, memory_command, forget_command,
     knowledge_command, emails_command,
+    mission_command, missions_command, mission_status_command,
+    mission_step_command, mission_confirm_command, mission_report_command,
     email_draft_command, drafts_command, draft_view_command, draft_delete_command,
     send_due_task_reminders, send_daily_summaries, send_meeting_reminders,
 )
@@ -43,6 +45,12 @@ def build_application():
     app.add_handler(CommandHandler("memory", memory_command))
     app.add_handler(CommandHandler("forget", forget_command))
     app.add_handler(CommandHandler("knowledge", knowledge_command))
+    app.add_handler(CommandHandler("mission", mission_command))
+    app.add_handler(CommandHandler("missions", missions_command))
+    app.add_handler(CommandHandler("mission_status", mission_status_command))
+    app.add_handler(CommandHandler("mission_step", mission_step_command))
+    app.add_handler(CommandHandler("mission_confirm", mission_confirm_command))
+    app.add_handler(CommandHandler("mission_report", mission_report_command))
     app.add_handler(CommandHandler("emails", emails_command))
     app.add_handler(CommandHandler("email_draft", email_draft_command))
     app.add_handler(CommandHandler("drafts", drafts_command))
