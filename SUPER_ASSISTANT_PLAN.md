@@ -31,6 +31,7 @@ Objetivo: permitir que o bot recupere memorias, tarefas e documentos por signifi
 Status: implementacao inicial iniciada.
 
 - Banco vetorial local em SQLite.
+- Backend opcional Supabase/pgvector para producao.
 - Embeddings locais deterministas por hashing.
 - Indexacao automatica de memorias e tarefas.
 - Comando `/knowledge` para busca semantica, notas e indexacao de docs.
@@ -103,6 +104,8 @@ Status: implementacao inicial iniciada.
 ## Fase 5 - Modo agente
 
 Objetivo: permitir que o usuario de uma meta e o bot quebre em passos.
+
+Status: implementacao inicial iniciada.
 
 - Planejamento automatico de metas.
 - Execucao com checkpoints.

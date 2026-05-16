@@ -167,6 +167,24 @@ Use apenas em plano que não hiberne. O plano gratuito pode parar por inatividad
    GEMINI_API_KEY=sua_key_aqui
    ```
 
+   Para usar Supabase como banco vetorial do RAG, rode `supabase/knowledge_items.sql`
+   no SQL Editor do Supabase e adicione também:
+   ```env
+   RAG_VECTOR_BACKEND=supabase
+   RAG_SUPABASE_FALLBACK_TO_SQLITE=true
+   SUPABASE_URL=https://seu-projeto.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=sua_service_role_key
+   SUPABASE_SCHEMA=public
+   SUPABASE_KNOWLEDGE_TABLE=knowledge_items
+   SUPABASE_MATCH_FUNCTION=match_knowledge_items
+   SUPABASE_REQUEST_TIMEOUT=10
+   ```
+
+   Depois de preencher as variáveis, valide a conexão:
+   ```bash
+   python scripts/check_supabase_vector_store.py
+   ```
+
 5. **Inicie o bot com Docker Compose**
    ```bash
    mkdir -p data
