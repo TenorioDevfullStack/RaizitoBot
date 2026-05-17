@@ -8,6 +8,7 @@ from datetime import date, datetime, time, timedelta
 
 from dotenv import load_dotenv
 from bot.rag import cosine_similarity, embed_text
+from bot.time_utils import local_date, local_now, parse_local_datetime
 from bot.vector_store import (
     active_vector_backend,
     supabase_clear_knowledge_source,
@@ -269,12 +270,7 @@ def _parse_time(value):
 
 
 def _parse_datetime(value):
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
+    return parse_local_datetime(value)
 
 
 def _row_to_internal_event(row):
@@ -675,8 +671,8 @@ def get_tasks(user_id, pending_only=True, task_filter="pending", category=None):
     tasks = [_row_to_task(row) for row in c.fetchall()]
     conn.close()
 
-    today = date.today()
-    now_time = datetime.now().time()
+    today = local_date()
+    now_time = local_now().time()
     normalized_filter = (task_filter or "pending").lower()
 
     if category:
@@ -860,7 +856,6 @@ def complete_task_with_recurrence(task_id, user_id):
 def get_due_task_reminders(limit=50):
     conn = _connect()
     c = conn.cursor()
-    now = datetime.now().isoformat(timespec="minutes")
     c.execute(
         """
         SELECT
@@ -870,22 +865,32 @@ def get_due_task_reminders(limit=50):
         FROM tasks
         WHERE is_completed = 0
             AND reminder_at IS NOT NULL
-            AND reminder_at <= ?
-            AND (last_reminded_at IS NULL OR last_reminded_at < reminder_at)
         ORDER BY reminder_at ASC
         LIMIT ?
         """,
-        (now, limit),
+        (max(limit * 20, 1000),),
     )
-    tasks = [_row_to_task(row) for row in c.fetchall()]
+    rows = c.fetchall()
     conn.close()
-    return tasks
+    now = local_now()
+    due = []
+    for row in rows:
+        task = _row_to_task(row)
+        reminder_at = parse_local_datetime(task.get("reminder_at"))
+        last_reminded_at = parse_local_datetime(task.get("last_reminded_at"))
+        if not reminder_at:
+            continue
+        if reminder_at <= now and (last_reminded_at is None or last_reminded_at < reminder_at):
+            due.append(task)
+        if len(due) >= limit:
+            break
+    return due
 
 
 def mark_task_reminded(task_id):
     conn = _connect()
     c = conn.cursor()
-    reminded_at = datetime.now().isoformat(timespec="minutes")
+    reminded_at = local_now().isoformat(timespec="minutes")
     c.execute(
         "UPDATE tasks SET last_reminded_at = ?, updated_at = ? WHERE id = ?",
         (reminded_at, reminded_at, task_id),
@@ -1242,7 +1247,7 @@ def list_user_settings(limit=100):
 def get_users_for_daily_summary(current_time):
     conn = _connect()
     c = conn.cursor()
-    today = date.today().isoformat()
+    today = local_date().isoformat()
     c.execute(
         """
         SELECT user_id, chat_id, daily_summary_time
@@ -1621,8 +1626,8 @@ def list_internal_events(user_id, event_filter="upcoming", limit=20):
     events = [_row_to_internal_event(row) for row in c.fetchall()]
     conn.close()
 
-    now = datetime.now().astimezone()
-    today = date.today()
+    now = local_now()
+    today = local_date()
     week_end = today + timedelta(days=7)
 
     if normalized_filter in {"today", "hoje"}:
@@ -1741,7 +1746,7 @@ def get_due_internal_event_reminders(limit=50):
     events = [_row_to_internal_event(row) for row in c.fetchall()]
     conn.close()
 
-    now = datetime.now().astimezone()
+    now = local_now()
     due = []
     for event in events:
         start_at = _parse_datetime(event["start_at"])
@@ -1761,7 +1766,7 @@ def get_due_internal_event_reminders(limit=50):
 def mark_internal_event_reminded(event_id):
     conn = _connect()
     c = conn.cursor()
-    reminded_at = datetime.now().isoformat(timespec="minutes")
+    reminded_at = local_now().isoformat(timespec="minutes")
     c.execute(
         "UPDATE internal_events SET last_reminded_at = ?, updated_at = ? WHERE id = ?",
         (reminded_at, reminded_at, event_id),
