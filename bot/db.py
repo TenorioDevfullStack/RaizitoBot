@@ -51,6 +51,10 @@ def _connect():
     return sqlite3.connect(db_path)
 
 
+def get_database_path():
+    return _db_path()
+
+
 def _add_column_if_missing(cursor, table_name, column_name, column_sql):
     cursor.execute(f"PRAGMA table_info({table_name})")
     existing_columns = {row[1] for row in cursor.fetchall()}
@@ -378,6 +382,27 @@ def init_db():
         )
     ''')
     _add_column_if_missing(c, "user_settings", "meeting_reminder_minutes", "meeting_reminder_minutes INTEGER DEFAULT 15")
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS authorized_users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            full_name TEXT,
+            note TEXT,
+            is_active BOOLEAN DEFAULT 1,
+            source TEXT DEFAULT 'admin',
+            last_seen_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT
+        )
+    ''')
+    _add_column_if_missing(c, "authorized_users", "username", "username TEXT")
+    _add_column_if_missing(c, "authorized_users", "full_name", "full_name TEXT")
+    _add_column_if_missing(c, "authorized_users", "note", "note TEXT")
+    _add_column_if_missing(c, "authorized_users", "is_active", "is_active BOOLEAN DEFAULT 1")
+    _add_column_if_missing(c, "authorized_users", "source", "source TEXT DEFAULT 'admin'")
+    _add_column_if_missing(c, "authorized_users", "last_seen_at", "last_seen_at TEXT")
+    _add_column_if_missing(c, "authorized_users", "updated_at", "updated_at TEXT")
 
     c.execute('''
         CREATE TABLE IF NOT EXISTS pending_calendar_events (
@@ -1114,6 +1139,36 @@ def get_user_settings(user_id):
     }
 
 
+def list_user_settings(limit=100):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT user_id, chat_id, daily_summary_enabled, daily_summary_time,
+               meeting_reminders_enabled, meeting_reminder_minutes,
+               last_daily_summary_date
+        FROM user_settings
+        ORDER BY user_id ASC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {
+            "user_id": row[0],
+            "chat_id": row[1],
+            "daily_summary_enabled": bool(row[2]),
+            "daily_summary_time": row[3],
+            "meeting_reminders_enabled": bool(row[4]),
+            "meeting_reminder_minutes": row[5] or 15,
+            "last_daily_summary_date": row[6],
+        }
+        for row in rows
+    ]
+
+
 def get_users_for_daily_summary(current_time):
     conn = _connect()
     c = conn.cursor()
@@ -1153,6 +1208,164 @@ def get_users_with_meeting_reminders():
         {"user_id": row[0], "chat_id": row[1], "meeting_reminder_minutes": row[2] or 15}
         for row in rows
     ]
+
+
+def upsert_authorized_user(
+    user_id,
+    username=None,
+    full_name=None,
+    note=None,
+    is_active=True,
+    source="admin",
+    mark_seen=False,
+):
+    conn = _connect()
+    c = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    c.execute("SELECT user_id FROM authorized_users WHERE user_id = ?", (user_id,))
+    exists = c.fetchone() is not None
+    if exists:
+        updates = []
+        params = []
+        values = {
+            "username": username,
+            "full_name": full_name,
+            "note": note,
+            "is_active": int(bool(is_active)) if is_active is not None else None,
+            "source": source,
+            "last_seen_at": now if mark_seen else None,
+        }
+        for column, value in values.items():
+            if value is not None:
+                updates.append(f"{column} = ?")
+                params.append(value)
+        updates.append("updated_at = ?")
+        params.append(now)
+        params.append(user_id)
+        c.execute(
+            f"UPDATE authorized_users SET {', '.join(updates)} WHERE user_id = ?",
+            params,
+        )
+    else:
+        c.execute(
+            """
+            INSERT INTO authorized_users (
+                user_id, username, full_name, note, is_active, source,
+                last_seen_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                username,
+                full_name,
+                note,
+                int(bool(is_active)),
+                source,
+                now if mark_seen else None,
+                now,
+                now,
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+
+def observe_authorized_user(user_id, username=None, full_name=None):
+    conn = _connect()
+    c = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    c.execute("SELECT user_id FROM authorized_users WHERE user_id = ?", (user_id,))
+    if c.fetchone():
+        c.execute(
+            """
+            UPDATE authorized_users
+            SET username = COALESCE(?, username),
+                full_name = COALESCE(?, full_name),
+                last_seen_at = ?,
+                updated_at = ?
+            WHERE user_id = ?
+            """,
+            (username, full_name, now, now, user_id),
+        )
+    else:
+        c.execute(
+            """
+            INSERT INTO authorized_users (
+                user_id, username, full_name, is_active, source,
+                last_seen_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 0, 'observed', ?, ?, ?)
+            """,
+            (user_id, username, full_name, now, now, now),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_authorized_user(user_id):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT user_id, username, full_name, note, is_active, source,
+               last_seen_at, created_at, updated_at
+        FROM authorized_users
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "user_id": row[0],
+        "username": row[1],
+        "full_name": row[2],
+        "note": row[3],
+        "is_active": bool(row[4]),
+        "source": row[5],
+        "last_seen_at": row[6],
+        "created_at": row[7],
+        "updated_at": row[8],
+    }
+
+
+def list_authorized_users(limit=100):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT user_id, username, full_name, note, is_active, source,
+               last_seen_at, created_at, updated_at
+        FROM authorized_users
+        ORDER BY is_active DESC, datetime(COALESCE(last_seen_at, updated_at, created_at)) DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {
+            "user_id": row[0],
+            "username": row[1],
+            "full_name": row[2],
+            "note": row[3],
+            "is_active": bool(row[4]),
+            "source": row[5],
+            "last_seen_at": row[6],
+            "created_at": row[7],
+            "updated_at": row[8],
+        }
+        for row in rows
+    ]
+
+
+def is_authorized_user_active(user_id):
+    user = get_authorized_user(user_id)
+    return bool(user and user["is_active"])
 
 
 def add_pending_calendar_event(
@@ -1809,3 +2022,72 @@ def save_mission_report(user_id, mission_id, report):
     conn.commit()
     conn.close()
     return True
+
+
+def get_operational_counts():
+    conn = _connect()
+    c = conn.cursor()
+    tables = [
+        "tasks",
+        "memories",
+        "knowledge_items",
+        "missions",
+        "mission_steps",
+        "email_drafts",
+        "user_settings",
+        "authorized_users",
+    ]
+    counts = {}
+    for table in tables:
+        try:
+            c.execute(f"SELECT COUNT(*) FROM {table}")
+            counts[table] = c.fetchone()[0]
+        except sqlite3.Error:
+            counts[table] = None
+    conn.close()
+    return counts
+
+
+def create_database_backup(backup_dir=None):
+    source_path = Path(_db_path())
+    selected_backup_dir = Path(backup_dir or os.getenv("ADMIN_PANEL_BACKUP_DIR", "data/backups"))
+    selected_backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    backup_path = selected_backup_dir / f"bot_data-{timestamp}.db"
+
+    source_conn = _connect()
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            source_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        source_conn.close()
+
+    return {
+        "path": str(backup_path),
+        "source_path": str(source_path),
+        "size_bytes": backup_path.stat().st_size,
+        "created_at": timestamp,
+    }
+
+
+def list_database_backups(backup_dir=None, limit=20):
+    selected_backup_dir = Path(backup_dir or os.getenv("ADMIN_PANEL_BACKUP_DIR", "data/backups"))
+    if not selected_backup_dir.exists():
+        return []
+    backups = []
+    for path in selected_backup_dir.glob("*.db"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        backups.append({
+            "name": path.name,
+            "path": str(path),
+            "size_bytes": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+        })
+    backups.sort(key=lambda item: item["modified_at"], reverse=True)
+    return backups[:limit]

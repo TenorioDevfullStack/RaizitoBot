@@ -13,6 +13,7 @@ Bot do Telegram com integração de IA (Google Gemini) que oferece conversação
 - 🧩 **Memória Pessoal Persistente**: Salve fatos importantes com `/remember` ou mensagens como "lembre que..."
 - 🧭 **RAG Vetorial**: Busca semântica em memórias, tarefas, notas e documentos usando SQLite local ou Supabase/pgvector
 - 🧱 **Modo Agente**: Transforme metas em missões com passos, checkpoints, confirmações e relatórios
+- 🛠️ **Painel Operacional**: Status, logs, usuários autorizados, configurações e backup do banco
 - 🗓️ **Briefing Diário**: Combine agenda, tarefas, memória e RAG com `/today` e resumos automáticos
 - 📧 **E-mails Inteligentes**: Liste, resuma e indexe Gmail no RAG sem enviar respostas automaticamente
 - 📁 **Drive/Docs Inteligentes**: Indexe arquivos do Drive e resuma Google Docs com RAG
@@ -73,6 +74,9 @@ Para configurar as chaves de API necessárias (Google Search, Gmail, Drive, etc.
    - `RAG_SUPABASE_FALLBACK_TO_SQLITE`: use `true` para fallback local se Supabase falhar
    - `SUPABASE_URL`: Project URL do Supabase
    - `SUPABASE_SERVICE_ROLE_KEY`: service role secret do Supabase, apenas no servidor
+   - `ADMIN_PANEL_ENABLED`: use `true` para ligar o painel operacional
+   - `ADMIN_PANEL_TOKEN`: token longo para login no painel
+   - `AUTHORIZED_USER_IDS`: IDs Telegram permitidos quando a autorização estiver ativa
 
 4. **Execute o bot**
    ```bash
@@ -221,6 +225,37 @@ Nas conversas normais, o bot busca itens relevantes nessa base e injeta o contex
 ```
 
 O modo agente cria uma missão persistente no SQLite, divide a meta em passos com Gemini e usa um plano local de fallback quando a IA não estiver disponível. Cada atualização de passo vira um checkpoint. Passos que envolvem e-mail, agenda, pagamento, exclusão, publicação ou alteração externa são marcados como sensíveis e exigem `/mission_confirm` antes de iniciar ou concluir. Missões também entram no RAG para aparecerem como contexto em conversas futuras.
+
+### Painel operacional
+
+O painel roda dentro do mesmo processo do bot quando `ADMIN_PANEL_ENABLED=true`. Por padrão no Docker Compose ele fica publicado só em `127.0.0.1` da VM, então acesse com túnel SSH:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 usuario@IP_DA_VM
+```
+
+Abra `http://127.0.0.1:8080` e use o valor de `ADMIN_PANEL_TOKEN`.
+
+Variáveis principais:
+
+```env
+ADMIN_PANEL_ENABLED=true
+ADMIN_PANEL_HOST=0.0.0.0
+ADMIN_PANEL_PORT=8080
+ADMIN_PANEL_TOKEN=um_token_longo_e_secreto
+ADMIN_PANEL_BACKUP_DIR=data/backups
+LOG_FILE=data/bot.log
+ENFORCE_AUTHORIZED_USERS=false
+AUTHORIZED_USER_IDS=123456789,987654321
+```
+
+Recursos disponíveis:
+
+- Status do bot, banco e backend vetorial.
+- Logs recentes e resumo de avisos/erros por integração.
+- Lista de usuários observados/autorizados.
+- Edição de configurações por usuário.
+- Backup manual do SQLite com download pelo painel.
 
 ### MCP Google
 

@@ -185,6 +185,24 @@ Use apenas em plano que não hiberne. O plano gratuito pode parar por inatividad
    python scripts/check_supabase_vector_store.py
    ```
 
+   Para ativar o painel operacional na VM, adicione:
+   ```env
+   ADMIN_PANEL_ENABLED=true
+   ADMIN_PANEL_HOST=0.0.0.0
+   ADMIN_PANEL_PORT=8080
+   ADMIN_PANEL_TOKEN=gere_um_token_longo_e_secreto
+   ADMIN_PANEL_BACKUP_DIR=data/backups
+   LOG_FILE=data/bot.log
+   ENFORCE_AUTHORIZED_USERS=false
+   AUTHORIZED_USER_IDS=
+   ```
+
+   O `docker-compose.yml` publica o painel em `127.0.0.1:8080` da VM. Acesse com túnel SSH:
+   ```bash
+   ssh -L 8080:127.0.0.1:8080 usuario@IP_DA_VM
+   ```
+   Depois abra `http://127.0.0.1:8080` no navegador.
+
 5. **Inicie o bot com Docker Compose**
    ```bash
    mkdir -p data

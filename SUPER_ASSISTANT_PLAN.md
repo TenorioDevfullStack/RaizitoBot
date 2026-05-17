@@ -117,6 +117,8 @@ Status: implementacao inicial iniciada.
 
 Objetivo: dar visibilidade e controle fora do Telegram.
 
+Status: implementacao inicial iniciada.
+
 - Painel web com status do bot.
 - Logs recentes e erros por integracao.
 - Lista de usuarios autorizados.
