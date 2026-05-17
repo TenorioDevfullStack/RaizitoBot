@@ -67,6 +67,7 @@ Para configurar as chaves de API necessárias (Google Search, Gmail, Drive, etc.
    - `GEMINI_API_KEY`: Key do [Google AI Studio](https://aistudio.google.com/)
    - `GEMINI_MODEL`: Modelo Gemini opcional (padrão: `gemini-2.5-flash`)
    - `ASSISTANT_PERSONA`: Persona opcional para ajustar o tom humano do assistente
+   - `APP_TIMEZONE`: fuso local do bot para interpretar `hoje`, `amanhã` e lembretes (padrão: `America/Sao_Paulo`)
    - `GOOGLE_SEARCH_API_KEY` e `GOOGLE_SEARCH_CX`: Chaves do Google Custom Search
    - `GOOGLE_SERVICE_ACCOUNT_FILE`: JSON do service account com acesso a Gmail/Drive/Calendar/Docs
    - `GOOGLE_DELEGATED_USER`: (opcional) usuário a ser impersonado ao usar o service account
@@ -79,6 +80,7 @@ Para configurar as chaves de API necessárias (Google Search, Gmail, Drive, etc.
    - `ADMIN_PANEL_ENABLED`: use `true` para ligar o painel operacional
    - `ADMIN_PANEL_TOKEN`: token longo para login no painel
    - `AUTHORIZED_USER_IDS`: IDs Telegram permitidos quando a autorização estiver ativa
+   - `CRON_SECRET`: segredo opcional para proteger `/api/cron` em deploys por webhook
 
 4. **Execute o bot**
    ```bash
@@ -94,6 +96,10 @@ curl "https://api.telegram.org/bot<TELEGRAM_TOKEN>/setWebhook?url=https://SEU-DO
 ```
 
 Se não usar `TELEGRAM_WEBHOOK_SECRET`, remova o parâmetro `secret_token`.
+
+Para lembretes em deploy por webhook/serverless, mantenha o endpoint `/api/cron` agendado. O `vercel.json` já inclui uma execução por minuto. Se definir `CRON_SECRET`, envie `Authorization: Bearer <CRON_SECRET>` ou `X-Cron-Secret: <CRON_SECRET>`.
+
+Observação: SQLite local em serverless pode ser temporário. Para lembretes realmente confiáveis, prefira rodar `python main.py` em um VPS/Railway/Render com disco persistente, ou configure um banco persistente antes de depender da Vercel para tarefas agendadas.
 
 ## 📋 Comandos Disponíveis
 
@@ -158,7 +164,7 @@ Se não usar `TELEGRAM_WEBHOOK_SECRET`, remova o parâmetro `secret_token`.
 Além dos comandos, você pode:
 - 💬 Enviar mensagens de texto para conversar com a IA (com contexto das últimas interações)
 - 📝 Criar tarefas em linguagem natural, como `me lembre de pagar boleto amanhã às 9 #casa prioridade:alta`
-- ⏰ Criar lembretes em linguagem natural, como `crie um lembrete para tomar remédio em 30 minutos`
+- ⏰ Criar lembretes em linguagem natural, como `crie um lembrete para tomar remédio em 30 minutos` ou `me lembra de alongar em alguns minutos`
 - 🗓️ Criar eventos por texto ou áudio, como `crie uma reunião com Ana amanhã às 15h por 45min local: Meet`
 - 🖼️ Enviar fotos para análise
 - 🎙️ Enviar áudios/voice notes para transcrição e execução de instruções de agenda/lembrete
@@ -182,7 +188,7 @@ Para sobrescrever a persona sem alterar o código, defina `ASSISTANT_PERSONA` no
 ```
 
 Recorrências simples aceitas: `todo dia`, `semanal`/`toda semana` e `mensal`/`todo mês`.
-Os lembretes usam o `job_queue` do python-telegram-bot enquanto o bot estiver rodando em polling.
+Os lembretes usam o `job_queue` do python-telegram-bot enquanto o bot estiver rodando em polling. Em webhook/serverless, o endpoint `/api/cron` precisa ser chamado periodicamente para disparar lembretes, resumos diários e alertas de agenda.
 
 ### Eventos e lembretes por áudio
 

@@ -52,6 +52,7 @@ from bot.db import (
     upsert_knowledge_item,
 )
 from bot.rag import chunk_text
+from bot.time_utils import app_timezone, app_timezone_name, local_date, local_now, parse_local_datetime
 from bot.web_search import google_search
 from bot.external_integration import external_client
 from bot.google_services import (
@@ -118,10 +119,21 @@ TASK_PREFIXES = (
     "lembrete de ",
     "me avise para ",
     "me avise de ",
+    "me avise pra ",
     "avise-me para ",
     "avise-me de ",
     "me lembre de ",
+    "me lembre para ",
+    "me lembre pra ",
+    "me lembra de ",
+    "me lembra para ",
+    "me lembra pra ",
     "lembre-me de ",
+    "lembre-me para ",
+    "lembre-me pra ",
+    "lembra-me de ",
+    "lembra-me para ",
+    "lembra-me pra ",
     "me lembrar de ",
     "anote uma tarefa ",
     "anotar tarefa ",
@@ -313,6 +325,18 @@ WEEKDAYS = {
     "domingo": 6,
 }
 
+WEEKDAY_LABELS = (
+    "segunda-feira",
+    "terca-feira",
+    "quarta-feira",
+    "quinta-feira",
+    "sexta-feira",
+    "sabado",
+    "domingo",
+)
+
+RELATIVE_AMOUNT_PATTERN = r"\d{1,3}|um|uma|uns|umas|alguns|algumas|poucos|poucas"
+
 
 def _extract_memory_text(text):
     stripped = text.strip()
@@ -339,6 +363,16 @@ def _extract_task_text(text):
     )
     if polite_match:
         return polite_match.group(1).strip()
+
+    reminder_match = re.match(
+        r"^(?:por favor,\s*)?(?:raizito,\s*)?"
+        r"(?:me\s+lembra|me\s+lembre|lembra-me|lembre-me|me\s+avisa|me\s+avise|avisa-me|avise-me)\s+"
+        r"(?:(?:de|para|pra)\s+)?(.+)$",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    if reminder_match:
+        return reminder_match.group(1).strip()
     return None
 
 
@@ -400,8 +434,19 @@ def _calendar_uses_google():
     return _calendar_backend() in {"google", "both"}
 
 
+def _parse_relative_amount(raw_amount, unit):
+    value = raw_amount.strip().lower()
+    if value.isdigit():
+        return int(value)
+    if value in {"um", "uma"}:
+        return 1
+    if unit.startswith("h"):
+        return 2
+    return 5
+
+
 def _next_weekday(target_weekday):
-    today = date.today()
+    today = local_date()
     days_ahead = (target_weekday - today.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
@@ -410,7 +455,7 @@ def _next_weekday(target_weekday):
 
 def _parse_due_date(text):
     lowered = text.lower()
-    today = date.today()
+    today = local_date()
 
     if re.search(r"\b(hoje)\b", lowered):
         return today
@@ -419,9 +464,9 @@ def _parse_due_date(text):
     if re.search(r"\b(amanha|amanhã)\b", lowered):
         return today + timedelta(days=1)
 
-    days_match = re.search(r"\bem\s+(\d{1,3})\s+dias?\b", lowered)
+    days_match = re.search(rf"\b(?:em|daqui\s+a?)\s+({RELATIVE_AMOUNT_PATTERN})\s+dias?\b", lowered)
     if days_match:
-        return today + timedelta(days=int(days_match.group(1)))
+        return today + timedelta(days=_parse_relative_amount(days_match.group(1), "dias"))
 
     date_match = re.search(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b", lowered)
     if date_match:
@@ -448,6 +493,11 @@ def _parse_due_date(text):
 
 def _parse_due_time(text):
     lowered = text.lower()
+    lowered = re.sub(
+        rf"\b(?:em|daqui\s+a?)\s+(?:{RELATIVE_AMOUNT_PATTERN})\s*(?:minutos?|min|horas?|h)\b",
+        " ",
+        lowered,
+    )
     if re.search(r"\b(meio dia|meio-dia)\b", lowered):
         return time(12, 0)
     if re.search(r"\b(meia noite|meia-noite)\b", lowered):
@@ -508,22 +558,30 @@ def _parse_recurrence(text):
 
 def _parse_reminder_at(text, due_date, due_time):
     lowered = text.lower()
-    now = datetime.now()
+    now = local_now()
 
-    relative_match = re.search(r"\b(?:lembrete|lembrar)\s+em\s+(\d{1,3})\s*(minutos?|min|horas?|h)\b", lowered)
+    relative_match = re.search(
+        rf"\b(?:lembrete|lembrar|avisar|me\s+lembre|me\s+lembra|lembre-me|lembra-me)?\s*"
+        rf"(?:em|daqui\s+a?)\s+({RELATIVE_AMOUNT_PATTERN})\s*(minutos?|min|horas?|h)\b",
+        lowered,
+    )
     if not relative_match:
-        relative_match = re.search(r"\bem\s+(\d{1,3})\s*(minutos?|min|horas?|h)\b", lowered)
+        relative_match = re.search(
+            rf"\b({RELATIVE_AMOUNT_PATTERN})\s*(minutos?|min|horas?|h)\s+"
+            r"(?:a partir de agora|de agora)\b",
+            lowered,
+        )
     if relative_match:
-        amount = int(relative_match.group(1))
+        amount = _parse_relative_amount(relative_match.group(1), relative_match.group(2))
         unit = relative_match.group(2)
         delta = timedelta(hours=amount) if unit.startswith("h") else timedelta(minutes=amount)
         return (now + delta).isoformat(timespec="minutes")
 
     if due_date and due_time:
-        return datetime.combine(due_date, due_time).isoformat(timespec="minutes")
+        return datetime.combine(due_date, due_time, tzinfo=app_timezone()).isoformat(timespec="minutes")
 
     if due_date and re.search(r"\b(lembrete|lembrar|me lembre|lembre-me)\b", lowered):
-        return datetime.combine(due_date, time(9, 0)).isoformat(timespec="minutes")
+        return datetime.combine(due_date, time(9, 0), tzinfo=app_timezone()).isoformat(timespec="minutes")
 
     return None
 
@@ -536,7 +594,11 @@ def _clean_task_title(text):
         r"\b(!alta|p1|p2|p3|urgente|prioridade alta|prioridade media|prioridade média|prioridade baixa)\b",
         r"\b(todo dia|todos os dias|diaria|diária|diariamente|toda semana|semanal|semanalmente|todo mes|todo mês|mensal|mensalmente)\b",
         r"\b(hoje|amanha|amanhã|depois de amanha|depois de amanhã)\b",
-        r"\bem\s+\d{1,3}\s+dias?\b",
+        rf"\b(?:em|daqui\s+a?)\s+(?:{RELATIVE_AMOUNT_PATTERN})\s+dias?\b",
+        rf"\b(?:lembrete|lembrar|avisar|me\s+lembre|me\s+lembra|lembre-me|lembra-me)?\s*"
+        rf"(?:em|daqui\s+a?)\s+(?:{RELATIVE_AMOUNT_PATTERN})\s*(?:minutos?|min|horas?|h)\b",
+        rf"\b(?:{RELATIVE_AMOUNT_PATTERN})\s*(?:minutos?|min|horas?|h)\s+"
+        r"(?:a partir de agora|de agora)\b",
         r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b",
         r"\b(?:segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)\b",
         r"\b(?:as|às|a|@)\s*\d{1,2}(?:[:h]\d{0,2})?\b",
@@ -544,8 +606,6 @@ def _clean_task_title(text):
         r"\b\d{1,2}\s*horas?\b",
         r"\b(meio dia|meio-dia|meia noite|meia-noite)\b",
         r"\b(da tarde|tarde|da noite|noite|da madrugada|madrugada|da manha|da manhã)\b",
-        r"\b(?:lembrete|lembrar)\s+em\s+\d{1,3}\s*(?:minutos?|min|horas?|h)\b",
-        r"\bem\s+\d{1,3}\s*(?:minutos?|min|horas?|h)\b",
     ]
     for pattern in cleanup_patterns:
         cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
@@ -560,12 +620,10 @@ def _parse_task_payload(text):
     recurrence = _parse_recurrence(text)
     reminder_at = _parse_reminder_at(text, due_date, due_time)
     if reminder_at and not due_date:
-        try:
-            reminder_dt = datetime.fromisoformat(reminder_at)
+        reminder_dt = parse_local_datetime(reminder_at)
+        if reminder_dt:
             due_date = reminder_dt.date()
-            due_time = reminder_dt.time().replace(second=0, microsecond=0)
-        except ValueError:
-            pass
+            due_time = reminder_dt.time().replace(tzinfo=None, second=0, microsecond=0)
     title = _clean_task_title(text)
 
     return {
@@ -721,7 +779,7 @@ def _parse_event_payload(text):
         return None
 
     duration_minutes = _parse_duration_minutes(text)
-    start_at = datetime.combine(event_date, event_time).astimezone()
+    start_at = datetime.combine(event_date, event_time, tzinfo=app_timezone())
     end_at = start_at + timedelta(minutes=duration_minutes)
     return {
         "summary": _clean_event_title(text),
@@ -736,12 +794,7 @@ def _parse_event_payload(text):
 
 
 def _parse_event_datetime(value):
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value).astimezone()
-    except ValueError:
-        return None
+    return parse_local_datetime(value)
 
 
 def _event_time_range(event):
@@ -901,13 +954,13 @@ def _format_internal_event_created(event):
 
 
 def _format_event_preview(pending_event):
-    start_at = datetime.fromisoformat(pending_event["start_at"])
-    end_at = datetime.fromisoformat(pending_event["end_at"])
+    start_at = parse_local_datetime(pending_event["start_at"])
+    end_at = parse_local_datetime(pending_event["end_at"])
     lines = [
         f"Evento pendente #{pending_event['id']}:",
         f"Titulo: {pending_event['summary']}",
-        f"Inicio: {start_at.strftime('%d/%m/%Y %H:%M')}",
-        f"Fim: {end_at.strftime('%d/%m/%Y %H:%M')}",
+        f"Inicio: {start_at.strftime('%d/%m/%Y %H:%M') if start_at else pending_event['start_at']}",
+        f"Fim: {end_at.strftime('%d/%m/%Y %H:%M') if end_at else pending_event['end_at']}",
     ]
     if pending_event.get("location"):
         lines.append(f"Local: {pending_event['location']}")
@@ -1603,8 +1656,19 @@ def _build_rag_context(user_id, query):
     return "\n\n".join(lines)
 
 
+def _build_time_context():
+    now = local_now()
+    weekday = WEEKDAY_LABELS[now.weekday()]
+    return (
+        "Data e hora atuais para interpretar pedidos do usuario:\n"
+        f"- Hoje: {weekday}, {now.strftime('%d/%m/%Y')}\n"
+        f"- Hora local: {now.strftime('%H:%M')}\n"
+        f"- Fuso horario: {app_timezone_name()}"
+    )
+
+
 def _build_assistant_context(user_id, query):
-    sections = [ASSISTANT_PERSONA]
+    sections = [ASSISTANT_PERSONA, _build_time_context()]
     memory_context = _build_memory_context(user_id)
     rag_context = _build_rag_context(user_id, query)
     if memory_context:
@@ -1665,7 +1729,7 @@ def build_today_briefing(user_id):
         memory_lines.append(f"- {item['title']}: {excerpt}")
 
     sections = [
-        f"Briefing de hoje - {date.today().strftime('%d/%m/%Y')}",
+        f"Briefing de hoje - {local_date().strftime('%d/%m/%Y')}",
         "",
         "Agenda:",
         agenda,
@@ -2070,8 +2134,8 @@ async def confirm_event_command(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         event = create_calendar_event(
             pending["summary"],
-            datetime.fromisoformat(pending["start_at"]),
-            datetime.fromisoformat(pending["end_at"]),
+            parse_local_datetime(pending["start_at"]),
+            parse_local_datetime(pending["end_at"]),
             pending.get("description"),
             location=pending.get("location"),
             attendees=pending.get("attendees"),
@@ -2115,7 +2179,7 @@ async def cancel_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def send_daily_summaries(context: ContextTypes.DEFAULT_TYPE):
-    current_time = datetime.now().strftime("%H:%M")
+    current_time = local_now().strftime("%H:%M")
     for user in get_users_for_daily_summary(current_time):
         try:
             await context.bot.send_message(
@@ -2125,7 +2189,7 @@ async def send_daily_summaries(context: ContextTypes.DEFAULT_TYPE):
             upsert_user_settings(
                 user["user_id"],
                 chat_id=user["chat_id"],
-                last_daily_summary_date=date.today().isoformat(),
+                last_daily_summary_date=local_date().isoformat(),
             )
         except Exception:
             continue
@@ -2153,7 +2217,7 @@ async def send_meeting_reminders(context: ContextTypes.DEFAULT_TYPE):
     if not _calendar_uses_google():
         return
 
-    start_window = datetime.now().astimezone()
+    start_window = local_now()
     for user in get_users_with_meeting_reminders():
         reminder_minutes = user.get("meeting_reminder_minutes") or 15
         end_window = start_window + timedelta(minutes=reminder_minutes)
