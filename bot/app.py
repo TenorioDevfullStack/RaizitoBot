@@ -16,7 +16,7 @@ from bot.db import is_authorized_user_active, observe_authorized_user, upsert_au
 from bot.handlers import (
     start_command, help_command, handle_message,
     add_task_command, list_tasks_command, complete_task_command,
-    today_command, daily_command, event_command, confirm_event_command, cancel_event_command,
+    today_command, daily_command, event_command, events_command, confirm_event_command, cancel_event_command,
     reminders_command,
     search_command, app_status_command,
     handle_photo, handle_audio,
@@ -109,6 +109,8 @@ def build_application():
     app.add_handler(CommandHandler("daily", daily_command))
     app.add_handler(CommandHandler("reminders", reminders_command))
     app.add_handler(CommandHandler("event", event_command))
+    app.add_handler(CommandHandler("events", events_command))
+    app.add_handler(CommandHandler("agenda", events_command))
     app.add_handler(CommandHandler("confirm_event", confirm_event_command))
     app.add_handler(CommandHandler("cancel_event", cancel_event_command))
     app.add_handler(CommandHandler("remember", remember_command))
@@ -140,6 +142,6 @@ def build_application():
     if app.job_queue:
         app.job_queue.run_repeating(send_due_task_reminders, interval=60, first=10)
         app.job_queue.run_repeating(send_daily_summaries, interval=60, first=20)
-        app.job_queue.run_repeating(send_meeting_reminders, interval=300, first=30)
+        app.job_queue.run_repeating(send_meeting_reminders, interval=60, first=30)
 
     return app
