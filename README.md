@@ -69,6 +69,7 @@ Para configurar as chaves de API necessárias (Google Search, Gmail, Drive, etc.
    - `GOOGLE_SEARCH_API_KEY` e `GOOGLE_SEARCH_CX`: Chaves do Google Custom Search
    - `GOOGLE_SERVICE_ACCOUNT_FILE`: JSON do service account com acesso a Gmail/Drive/Calendar/Docs
    - `GOOGLE_DELEGATED_USER`: (opcional) usuário a ser impersonado ao usar o service account
+   - `CALENDAR_BACKEND`: use `internal` para agenda interna sem Google Calendar, `google` para o fluxo antigo ou `both` para ambos
    - `GOOGLE_CALENDAR_TIMEZONE`: fuso usado ao criar eventos (padrão: `America/Sao_Paulo`)
    - `RAG_VECTOR_BACKEND`: use `supabase` para conectar ao Supabase pgvector
    - `RAG_SUPABASE_FALLBACK_TO_SQLITE`: use `true` para fallback local se Supabase falhar
@@ -112,9 +113,11 @@ Se não usar `TELEGRAM_WEBHOOK_SECRET`, remova o parâmetro `secret_token`.
 | `/reminders status` | Mostra configuração dos avisos de reunião |
 | `/reminders minutes <n>` | Define antecedência dos avisos de reunião |
 | `/reminders on/off` | Ativa ou desativa avisos de reunião |
-| `/event <texto>` | Prepara criação de evento no Calendar, checa conflitos e pede confirmação |
-| `/confirm_event <id>` | Confirma e cria um evento pendente no Calendar |
-| `/cancel_event <id>` | Cancela um evento pendente |
+| `/event <texto>` | Cria evento na agenda interna, com checagem de conflitos e alerta pelo Telegram |
+| `/events [hoje\|semana\|proximos\|todas\|cancelados]` | Lista eventos da agenda interna |
+| `/agenda [hoje\|semana\|proximos\|todas\|cancelados]` | Atalho para `/events` |
+| `/confirm_event <id>` | Confirma evento pendente no Google Calendar quando `CALENDAR_BACKEND=google` ou `both` |
+| `/cancel_event <id>` | Cancela evento interno ou evento pendente |
 | `/remember <texto>` | Salva uma memória pessoal persistente |
 | `/memory` | Lista as memórias salvas |
 | `/memory add <texto>` | Salva uma nova memória |
@@ -185,7 +188,7 @@ crie uma reunião com Ana amanhã às 3 da tarde por 45 minutos local: Google Me
 marque compromisso dentista sexta às 14h por 1 hora
 ```
 
-Eventos entram como pendentes e precisam de `/confirm_event <id>` antes de serem criados no Google Calendar.
+Com `CALENDAR_BACKEND=internal`, eventos entram direto na agenda interna e geram alerta no Telegram. Com `google` ou `both`, eventos do Google Calendar continuam exigindo `/confirm_event <id>`.
 
 ### RAG e banco vetorial
 
@@ -293,10 +296,11 @@ Em um cliente MCP, configure o comando acima a partir da raiz do projeto e preen
 /daily status
 /reminders minutes 30
 /event reunião com Ana amanhã às 10 por 45min local: Sala 2 desc: revisar proposta ana@example.com
-/confirm_event 1
+/events hoje
+/cancel_event 1
 ```
 
-O bot pede confirmação antes de criar eventos no Calendar. Antes da confirmação, ele tenta detectar conflitos e sugere horários alternativos. Eventos criados entram na base RAG para busca semântica futura. Quando o resumo diário está ativo, o `job_queue` envia o briefing no horário configurado e também avisa sobre reuniões conforme a antecedência configurada.
+Por padrão, a agenda usa `CALENDAR_BACKEND=internal`: os eventos ficam no SQLite do bot, entram no RAG, aparecem em `/today`, `/calendar`, `/events` e enviam alerta para o chat do Telegram conforme `/reminders minutes <n>`. Para reativar o Google Calendar depois, use `CALENDAR_BACKEND=google`; para manter agenda interna e também preparar evento no Google, use `CALENDAR_BACKEND=both`.
 
 ### E-mails inteligentes
 

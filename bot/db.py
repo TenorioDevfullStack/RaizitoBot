@@ -148,6 +148,24 @@ def _mission_knowledge_content(mission, steps=None):
     return "\n".join(lines)
 
 
+def _internal_event_knowledge_content(event):
+    lines = [
+        f"Evento interno: {event.get('summary')}",
+        f"Status: {event.get('status')}",
+        f"Inicio: {event.get('start_at')}",
+        f"Fim: {event.get('end_at')}",
+    ]
+    if event.get("location"):
+        lines.append(f"Local: {event['location']}")
+    if event.get("description"):
+        lines.append(f"Descricao: {event['description']}")
+    if event.get("attendees"):
+        lines.append("Convidados: " + ", ".join(event["attendees"]))
+    if event.get("reminder_minutes") is not None:
+        lines.append(f"Alerta: {event['reminder_minutes']} minutos antes")
+    return "\n".join(lines)
+
+
 def _upsert_knowledge_item(
     cursor,
     user_id,
@@ -257,6 +275,27 @@ def _parse_datetime(value):
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _row_to_internal_event(row):
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "chat_id": row[2],
+        "summary": row[3],
+        "start_at": row[4],
+        "end_at": row[5],
+        "description": row[6],
+        "location": row[7],
+        "attendees": _normalize_attendees(row[8]),
+        "status": row[9],
+        "reminder_minutes": row[10],
+        "last_reminded_at": row[11],
+        "created_at": row[12],
+        "updated_at": row[13],
+    }
 
 
 def _task_sort_key(task):
@@ -429,6 +468,37 @@ def init_db():
             reminded_at TEXT NOT NULL,
             UNIQUE(user_id, event_key)
         )
+    ''')
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS internal_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            summary TEXT NOT NULL,
+            start_at TEXT NOT NULL,
+            end_at TEXT NOT NULL,
+            description TEXT,
+            location TEXT,
+            attendees TEXT,
+            status TEXT DEFAULT 'scheduled',
+            reminder_minutes INTEGER DEFAULT 15,
+            last_reminded_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT
+        )
+    ''')
+    _add_column_if_missing(c, "internal_events", "description", "description TEXT")
+    _add_column_if_missing(c, "internal_events", "location", "location TEXT")
+    _add_column_if_missing(c, "internal_events", "attendees", "attendees TEXT")
+    _add_column_if_missing(c, "internal_events", "status", "status TEXT DEFAULT 'scheduled'")
+    _add_column_if_missing(c, "internal_events", "reminder_minutes", "reminder_minutes INTEGER DEFAULT 15")
+    _add_column_if_missing(c, "internal_events", "last_reminded_at", "last_reminded_at TEXT")
+    _add_column_if_missing(c, "internal_events", "updated_at", "updated_at TEXT")
+
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_internal_events_user_time
+        ON internal_events (user_id, status, start_at)
     ''')
 
     c.execute('''
@@ -1445,6 +1515,261 @@ def delete_pending_calendar_event(event_id, user_id):
     return rows_affected > 0
 
 
+def add_internal_event(
+    user_id,
+    chat_id,
+    summary,
+    start_at,
+    end_at,
+    description=None,
+    location=None,
+    attendees=None,
+    reminder_minutes=15,
+):
+    conn = _connect()
+    c = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    normalized_attendees = _normalize_attendees(attendees)
+    c.execute(
+        """
+        INSERT INTO internal_events (
+            user_id, chat_id, summary, start_at, end_at, description, location,
+            attendees, status, reminder_minutes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+        """,
+        (
+            user_id,
+            chat_id,
+            summary,
+            start_at,
+            end_at,
+            description,
+            location,
+            json.dumps(normalized_attendees),
+            reminder_minutes,
+            now,
+        ),
+    )
+    event_id = c.lastrowid
+    event = {
+        "id": event_id,
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "summary": summary,
+        "start_at": start_at,
+        "end_at": end_at,
+        "description": description,
+        "location": location,
+        "attendees": normalized_attendees,
+        "status": "scheduled",
+        "reminder_minutes": reminder_minutes,
+    }
+    _upsert_knowledge_item(
+        c,
+        user_id,
+        "internal_event",
+        event_id,
+        summary,
+        _internal_event_knowledge_content(event),
+        metadata={"internal_event_id": event_id, "status": "scheduled"},
+    )
+    conn.commit()
+    conn.close()
+    return event_id
+
+
+def get_internal_event(event_id, user_id):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, user_id, chat_id, summary, start_at, end_at, description,
+               location, attendees, status, reminder_minutes, last_reminded_at,
+               created_at, updated_at
+        FROM internal_events
+        WHERE id = ? AND user_id = ?
+        """,
+        (event_id, user_id),
+    )
+    event = _row_to_internal_event(c.fetchone())
+    conn.close()
+    return event
+
+
+def list_internal_events(user_id, event_filter="upcoming", limit=20):
+    conn = _connect()
+    c = conn.cursor()
+    query = """
+        SELECT id, user_id, chat_id, summary, start_at, end_at, description,
+               location, attendees, status, reminder_minutes, last_reminded_at,
+               created_at, updated_at
+        FROM internal_events
+        WHERE user_id = ?
+    """
+    params = [user_id]
+    normalized_filter = (event_filter or "upcoming").lower()
+
+    if normalized_filter not in {"all", "todas", "cancelled", "cancelados"}:
+        query += " AND status = 'scheduled'"
+    elif normalized_filter in {"cancelled", "cancelados"}:
+        query += " AND status = 'cancelled'"
+
+    query += " ORDER BY datetime(start_at) ASC, id ASC LIMIT ?"
+    params.append(max(limit * 20, 1000))
+    c.execute(query, params)
+    events = [_row_to_internal_event(row) for row in c.fetchall()]
+    conn.close()
+
+    now = datetime.now().astimezone()
+    today = date.today()
+    week_end = today + timedelta(days=7)
+
+    if normalized_filter in {"today", "hoje"}:
+        events = [
+            event for event in events
+            if (_parse_datetime(event["start_at"]) or datetime.min).date() == today
+        ]
+    elif normalized_filter in {"week", "semana"}:
+        events = [
+            event for event in events
+            if today <= (_parse_datetime(event["start_at"]) or datetime.max).date() <= week_end
+        ]
+    elif normalized_filter in {"past", "passados"}:
+        events = [
+            event for event in events
+            if (_parse_datetime(event["end_at"]) or datetime.max.replace(tzinfo=now.tzinfo)) < now
+        ]
+    elif normalized_filter in {"upcoming", "proximos", "próximos"}:
+        events = [
+            event for event in events
+            if (_parse_datetime(event["end_at"]) or datetime.max.replace(tzinfo=now.tzinfo)) >= now
+        ]
+
+    return events[:limit]
+
+
+def get_internal_events_between(user_id, start_dt, end_dt, limit=50):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, user_id, chat_id, summary, start_at, end_at, description,
+               location, attendees, status, reminder_minutes, last_reminded_at,
+               created_at, updated_at
+        FROM internal_events
+        WHERE user_id = ? AND status = 'scheduled'
+        ORDER BY datetime(start_at) ASC, id ASC
+        LIMIT ?
+        """,
+        (user_id, max(limit * 20, 1000)),
+    )
+    rows = c.fetchall()
+    conn.close()
+    events = [_row_to_internal_event(row) for row in rows]
+    conflicts = []
+    for event in events:
+        event_start = _parse_datetime(event["start_at"])
+        event_end = _parse_datetime(event["end_at"])
+        if event_start and event_end and event_start < end_dt and start_dt < event_end:
+            conflicts.append(event)
+    return conflicts
+
+
+def cancel_internal_event(event_id, user_id):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, user_id, chat_id, summary, start_at, end_at, description,
+               location, attendees, status, reminder_minutes, last_reminded_at,
+               created_at, updated_at
+        FROM internal_events
+        WHERE id = ? AND user_id = ?
+        """,
+        (event_id, user_id),
+    )
+    event = _row_to_internal_event(c.fetchone())
+    if not event:
+        conn.close()
+        return False
+
+    now = datetime.utcnow().isoformat()
+    c.execute(
+        """
+        UPDATE internal_events
+        SET status = 'cancelled', updated_at = ?
+        WHERE id = ? AND user_id = ?
+        """,
+        (now, event_id, user_id),
+    )
+    event["status"] = "cancelled"
+    event["updated_at"] = now
+    _upsert_knowledge_item(
+        c,
+        user_id,
+        "internal_event",
+        event_id,
+        event["summary"],
+        _internal_event_knowledge_content(event),
+        metadata={"internal_event_id": event_id, "status": "cancelled"},
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_due_internal_event_reminders(limit=50):
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT e.id, e.user_id, e.chat_id, e.summary, e.start_at, e.end_at,
+               e.description, e.location, e.attendees, e.status,
+               e.reminder_minutes, e.last_reminded_at, e.created_at, e.updated_at
+        FROM internal_events AS e
+        LEFT JOIN user_settings AS s ON s.user_id = e.user_id
+        WHERE e.status = 'scheduled'
+            AND e.chat_id IS NOT NULL
+            AND e.last_reminded_at IS NULL
+            AND COALESCE(s.meeting_reminders_enabled, 1) = 1
+        ORDER BY datetime(e.start_at) ASC, e.id ASC
+        LIMIT ?
+        """,
+        (limit * 4,),
+    )
+    events = [_row_to_internal_event(row) for row in c.fetchall()]
+    conn.close()
+
+    now = datetime.now().astimezone()
+    due = []
+    for event in events:
+        start_at = _parse_datetime(event["start_at"])
+        if not start_at:
+            continue
+        reminder_minutes = event.get("reminder_minutes")
+        if reminder_minutes is None:
+            reminder_minutes = 15
+        remind_at = start_at - timedelta(minutes=reminder_minutes)
+        if remind_at <= now <= start_at + timedelta(minutes=1):
+            due.append(event)
+        if len(due) >= limit:
+            break
+    return due
+
+
+def mark_internal_event_reminded(event_id):
+    conn = _connect()
+    c = conn.cursor()
+    reminded_at = datetime.now().isoformat(timespec="minutes")
+    c.execute(
+        "UPDATE internal_events SET last_reminded_at = ?, updated_at = ? WHERE id = ?",
+        (reminded_at, reminded_at, event_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 def mark_calendar_event_reminded(user_id, event_key):
     conn = _connect()
     c = conn.cursor()
@@ -2029,6 +2354,7 @@ def get_operational_counts():
     c = conn.cursor()
     tables = [
         "tasks",
+        "internal_events",
         "memories",
         "knowledge_items",
         "missions",

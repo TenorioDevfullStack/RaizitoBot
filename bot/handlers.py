@@ -8,10 +8,12 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from bot.ai_service import get_gemini_response, analyze_image, transcribe_audio
 from bot.db import (
+    add_internal_event,
     add_pending_calendar_event,
     add_email_draft,
     add_memory,
     add_task,
+    cancel_internal_event,
     clear_memories,
     complete_task_with_recurrence,
     confirm_mission_step,
@@ -21,8 +23,11 @@ from bot.db import (
     get_email_draft,
     get_email_drafts,
     get_mission,
+    get_internal_event,
+    get_internal_events_between,
     get_pending_calendar_event,
     get_conversation_history,
+    get_due_internal_event_reminders,
     get_due_task_reminders,
     get_knowledge_backend,
     get_memories,
@@ -31,10 +36,12 @@ from bot.db import (
     get_users_for_daily_summary,
     get_users_with_meeting_reminders,
     list_missions,
+    list_internal_events,
     clear_knowledge_source,
     count_knowledge_items,
     log_conversation,
     mark_calendar_event_reminded,
+    mark_internal_event_reminded,
     mark_task_reminded,
     search_knowledge,
     save_mission_report,
@@ -175,6 +182,24 @@ TASK_FILTER_ALIASES = {
     "all": "all",
     "pendentes": "pending",
     "pending": "pending",
+}
+
+EVENT_FILTER_ALIASES = {
+    "hoje": "today",
+    "today": "today",
+    "semana": "week",
+    "week": "week",
+    "proximos": "upcoming",
+    "próximos": "upcoming",
+    "upcoming": "upcoming",
+    "futuros": "upcoming",
+    "todos": "all",
+    "todas": "all",
+    "all": "all",
+    "cancelados": "cancelled",
+    "cancelled": "cancelled",
+    "passados": "past",
+    "past": "past",
 }
 
 MISSION_STATUS_ALIASES = {
@@ -326,6 +351,28 @@ def _extract_mission_goal(text):
         if lowered.startswith(prefix):
             return stripped[len(prefix):].strip()
     return None
+
+
+def _calendar_backend():
+    backend = (os.getenv("CALENDAR_BACKEND") or "internal").strip().lower()
+    aliases = {
+        "local": "internal",
+        "interno": "internal",
+        "agenda_interna": "internal",
+        "calendar": "google",
+        "google_calendar": "google",
+        "gcal": "google",
+        "ambos": "both",
+    }
+    return aliases.get(backend, backend if backend in {"internal", "google", "both"} else "internal")
+
+
+def _calendar_uses_internal():
+    return _calendar_backend() in {"internal", "both"}
+
+
+def _calendar_uses_google():
+    return _calendar_backend() in {"google", "both"}
 
 
 def _next_weekday(target_weekday):
@@ -578,6 +625,26 @@ def _parse_duration_minutes(text, default_minutes=60):
     return amount * 60 if unit.startswith("h") else amount
 
 
+def _parse_event_reminder_minutes(text):
+    lowered = text.lower()
+    reminder_match = re.search(
+        r"\b(?:alerta|avis[oe]|lembrar|lembrete)\s+(?:com\s+)?"
+        r"(\d{1,3})\s*(minutos?|min|horas?|h)\s+(?:antes|de antecedencia|de antecedência)\b",
+        lowered,
+    )
+    if not reminder_match:
+        reminder_match = re.search(
+            r"\b(\d{1,3})\s*(minutos?|min|horas?|h)\s+antes\b",
+            lowered,
+        )
+    if not reminder_match:
+        return None
+    amount = int(reminder_match.group(1))
+    unit = reminder_match.group(2)
+    minutes = amount * 60 if unit.startswith("h") else amount
+    return max(0, min(minutes, 24 * 60))
+
+
 def _extract_event_field(text, names):
     joined_names = "|".join(re.escape(name) for name in names)
     pattern = rf"\b(?:{joined_names})\s*:\s*(.+?)(?=\s+\w+\s*:|$)"
@@ -609,6 +676,14 @@ def _clean_event_title(text):
         flags=re.IGNORECASE,
     )
     cleaned = re.sub(r"\b(?:por|duracao|duração)\b\s*$", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\b(?:alerta|avis[oe]|lembrar|lembrete)\s+(?:com\s+)?\d{1,3}\s*"
+        r"(?:minutos?|min|horas?|h)\s+(?:antes|de antecedencia|de antecedência)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\b\d{1,3}\s*(?:minutos?|min|horas?|h)\s+antes\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:local|lugar|onde|desc|descricao|descrição|nota|obs)\s*:\s*.+?(?=\s+\w+\s*:|$)", " ", cleaned, flags=re.IGNORECASE)
     cleaned = EMAIL_RE.sub(" ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip(" -,.") or text.strip()
@@ -631,6 +706,7 @@ def _parse_event_payload(text):
         "description": _parse_event_description(text),
         "location": _parse_event_location(text),
         "attendees": _parse_event_attendees(text),
+        "reminder_minutes": _parse_event_reminder_minutes(text),
     }
 
 
@@ -644,8 +720,8 @@ def _parse_event_datetime(value):
 
 
 def _event_time_range(event):
-    start_value = event.get("start", {}).get("dateTime")
-    end_value = event.get("end", {}).get("dateTime")
+    start_value = event.get("start_at") or event.get("start", {}).get("dateTime")
+    end_value = event.get("end_at") or event.get("end", {}).get("dateTime")
     if not start_value or not end_value:
         return None
     start_at = _parse_event_datetime(start_value)
@@ -666,6 +742,15 @@ def _find_calendar_conflicts(start_at, end_at):
         if event_start < end_at and start_at < event_end:
             conflicts.append(event)
     return conflicts
+
+
+def _find_internal_conflicts(user_id, start_at, end_at):
+    return get_internal_events_between(
+        user_id,
+        start_at - timedelta(minutes=1),
+        end_at + timedelta(minutes=1),
+        limit=50,
+    )
 
 
 def _format_conflicts(conflicts):
@@ -723,6 +808,70 @@ def _event_knowledge_content(event):
         emails = [attendee.get("email") for attendee in attendees if attendee.get("email")]
         if emails:
             lines.append("Convidados: " + ", ".join(emails))
+    return "\n".join(lines)
+
+
+def _internal_event_knowledge_content(event):
+    lines = [
+        f"Evento interno: {event.get('summary', '(Sem titulo)')}",
+        f"Inicio: {event.get('start_at')}",
+        f"Fim: {event.get('end_at')}",
+        f"Status: {event.get('status', 'scheduled')}",
+    ]
+    if event.get("location"):
+        lines.append(f"Local: {event['location']}")
+    if event.get("description"):
+        lines.append(f"Descricao: {event['description']}")
+    if event.get("attendees"):
+        lines.append("Convidados: " + ", ".join(event["attendees"]))
+    if event.get("reminder_minutes") is not None:
+        lines.append(f"Alerta: {event['reminder_minutes']} minutos antes")
+    return "\n".join(lines)
+
+
+def _format_internal_event_line(event):
+    start_at = _parse_event_datetime(event.get("start_at"))
+    end_at = _parse_event_datetime(event.get("end_at"))
+    if start_at and end_at:
+        when = f"{start_at.strftime('%d/%m/%Y %H:%M')} ate {end_at.strftime('%H:%M')}"
+    else:
+        when = f"{event.get('start_at')} ate {event.get('end_at')}"
+    parts = [
+        f"{event['id']}. {event['summary']}",
+        when,
+        f"status: {event.get('status', 'scheduled')}",
+    ]
+    if event.get("location"):
+        parts.append(f"local: {event['location']}")
+    if event.get("reminder_minutes") is not None:
+        parts.append(f"alerta: {event['reminder_minutes']} min antes")
+    return " | ".join(parts)
+
+
+def _format_internal_events(events, title="Agenda interna"):
+    if not events:
+        return "Nenhum evento encontrado na agenda interna."
+    return "\n".join([f"{title}:"] + [_format_internal_event_line(event) for event in events])
+
+
+def _format_internal_event_created(event):
+    lines = [
+        f"Evento interno criado. ID: {event['id']}",
+        f"Titulo: {event['summary']}",
+    ]
+    start_at = _parse_event_datetime(event.get("start_at"))
+    end_at = _parse_event_datetime(event.get("end_at"))
+    if start_at and end_at:
+        lines.append(f"Inicio: {start_at.strftime('%d/%m/%Y %H:%M')}")
+        lines.append(f"Fim: {end_at.strftime('%d/%m/%Y %H:%M')}")
+    if event.get("location"):
+        lines.append(f"Local: {event['location']}")
+    if event.get("attendees"):
+        lines.append("Convidados: " + ", ".join(event["attendees"]))
+    if event.get("description"):
+        lines.append(f"Descricao: {event['description']}")
+    lines.append(f"Alerta: {event.get('reminder_minutes', 15)} minuto(s) antes")
+    lines.append(f"Cancele com /cancel_event {event['id']}")
     return "\n".join(lines)
 
 
@@ -1020,42 +1169,66 @@ async def _create_pending_event_from_text(update, user_id, chat_id, text):
         return
 
     warnings = []
-    try:
-        conflicts = _find_calendar_conflicts(payload["start_at"], payload["end_at"])
-    except Exception as e:
-        conflicts = []
-        warnings.append(f"Nao consegui checar conflitos no Calendar: {e}")
+    conflicts = []
+    backend = _calendar_backend()
+
+    if _calendar_uses_internal():
+        conflicts.extend(_find_internal_conflicts(user_id, payload["start_at"], payload["end_at"]))
+
+    if _calendar_uses_google():
+        try:
+            conflicts.extend(_find_calendar_conflicts(payload["start_at"], payload["end_at"]))
+        except Exception as e:
+            warnings.append(f"Nao consegui checar conflitos no Google Calendar: {e}")
 
     if conflicts:
         conflict_text = _format_conflicts(conflicts)
-        suggestions = _suggest_event_slots(
-            payload["start_at"],
-            payload["duration_minutes"],
-            conflicts,
-        )
-        suggestion_lines = [
-            f"- {slot.strftime('%d/%m/%Y %H:%M')}"
-            for slot in suggestions
-        ]
-        warnings.append(
-            f"{conflict_text}\nAlternativas proximas:\n" + "\n".join(suggestion_lines)
-        )
+        suggestions = _suggest_event_slots(payload["start_at"], payload["duration_minutes"], conflicts)
+        suggestion_lines = [f"- {slot.strftime('%d/%m/%Y %H:%M')}" for slot in suggestions]
+        warnings.append(f"{conflict_text}\nAlternativas proximas:\n" + "\n".join(suggestion_lines))
 
-    pending_id = add_pending_calendar_event(
-        user_id,
-        chat_id,
-        payload["summary"],
-        payload["start_at"].isoformat(timespec="minutes"),
-        payload["end_at"].isoformat(timespec="minutes"),
-        description=payload["description"],
-        location=payload["location"],
-        attendees=payload["attendees"],
-    )
-    pending = get_pending_calendar_event(pending_id, user_id)
     message_parts = []
     if warnings:
         message_parts.append("\n\n".join(warnings))
-    message_parts.append(_format_event_preview(pending))
+
+    created_internal_event = None
+    if _calendar_uses_internal():
+        settings = get_user_settings(user_id) or {}
+        reminder_minutes = payload["reminder_minutes"]
+        if reminder_minutes is None:
+            reminder_minutes = settings.get("meeting_reminder_minutes", 15)
+        internal_id = add_internal_event(
+            user_id,
+            chat_id,
+            payload["summary"],
+            payload["start_at"].isoformat(timespec="minutes"),
+            payload["end_at"].isoformat(timespec="minutes"),
+            description=payload["description"],
+            location=payload["location"],
+            attendees=payload["attendees"],
+            reminder_minutes=reminder_minutes,
+        )
+        created_internal_event = get_internal_event(internal_id, user_id)
+        message_parts.append(_format_internal_event_created(created_internal_event))
+
+    if _calendar_uses_google():
+        pending_id = add_pending_calendar_event(
+            user_id,
+            chat_id,
+            payload["summary"],
+            payload["start_at"].isoformat(timespec="minutes"),
+            payload["end_at"].isoformat(timespec="minutes"),
+            description=payload["description"],
+            location=payload["location"],
+            attendees=payload["attendees"],
+        )
+        pending = get_pending_calendar_event(pending_id, user_id)
+        message_parts.append(_format_event_preview(pending))
+
+    if not message_parts:
+        await update.message.reply_text(f"Backend de agenda invalido: {backend}. Use internal, google ou both.")
+        return
+
     await update.message.reply_text("\n\n".join(message_parts))
 
 
@@ -1441,12 +1614,22 @@ def build_today_briefing(user_id):
     overdue_tasks = get_tasks(user_id, task_filter="overdue")
     week_tasks = get_tasks(user_id, task_filter="week")
 
-    try:
-        events = list_events_for_day()
-        agenda = format_calendar_events(events, "Nenhum evento hoje.")
-    except Exception as e:
-        events = []
-        agenda = f"Nao consegui acessar o Calendar: {e}"
+    events = []
+    agenda_parts = []
+    if _calendar_uses_internal():
+        internal_events = list_internal_events(user_id, event_filter="today", limit=20)
+        events.extend(internal_events)
+        agenda_parts.append(_format_internal_events(internal_events, "Agenda interna de hoje"))
+
+    if _calendar_uses_google():
+        try:
+            google_events = list_events_for_day()
+            events.extend(google_events)
+            agenda_parts.append("Google Calendar:\n" + format_calendar_events(google_events, "Nenhum evento hoje."))
+        except Exception as e:
+            agenda_parts.append(f"Google Calendar: nao consegui acessar: {e}")
+
+    agenda = "\n\n".join(agenda_parts) if agenda_parts else "Nenhum backend de agenda ativo."
 
     memory_results = search_knowledge(user_id, "prioridades preferencias contexto importante hoje", limit=3)
     memory_lines = []
@@ -1522,9 +1705,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /today - Daily briefing with agenda, tasks and context
 /daily [on HH:MM|off|status] - Configure automatic daily briefing
 /reminders [on|off|minutes <n>|status] - Configure meeting reminders
-/event <text> - Prepare a Calendar event for confirmation
-/confirm_event <id> - Create a pending Calendar event
-/cancel_event <id> - Cancel a pending Calendar event
+/event <text> - Create an internal agenda event, or Google event when enabled
+/events [hoje|semana|proximos|todas|cancelados] - List internal agenda events
+/agenda [hoje|semana|proximos|todas|cancelados] - Alias for /events
+/confirm_event <id> - Create a pending Google Calendar event when Google backend is enabled
+/cancel_event <id> - Cancel an internal or pending event
 /remember <text> - Save a persistent memory
 /memory - List saved memories
 /memory add <text> - Save a persistent memory
@@ -1547,7 +1732,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /search <query> - Search the web
 /gmail [query] - List recent emails filtered by query (optional)
 /drive [list|index|search] - Drive file listing and RAG search
-/calendar - List upcoming events
+/calendar - List upcoming agenda events
 /docs <document_id|summary|index> - Preview, summarize or index Google Docs
 /app_status - Check external app status
 
@@ -1555,7 +1740,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - Conversas com memória: mantenho o contexto das últimas mensagens.
 - Memoria pessoal persistente: diga "lembre que..." para eu guardar fatos importantes.
 - Tarefas e lembretes inteligentes: entendo prazo, prioridade, categoria, recorrencia e alertas como "em 30 minutos".
-- Agenda inteligente: preparo eventos, reunioes e compromissos no Calendar com confirmacao.
+- Agenda interna: crio eventos, reunioes e compromissos no banco do bot e envio alertas pelo Telegram.
 - E-mails inteligentes: resumo, prioridade heuristica e busca semantica via RAG.
 - Drive/Docs inteligentes: indexo arquivos e resumo documentos Google Docs.
 - Modo agente: transformo metas em missoes com passos, checkpoints e relatorios.
@@ -1814,6 +1999,16 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Uso: /reminders on, /reminders off, /reminders minutes <n> ou /reminders status")
 
 
+async def events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    upsert_user_settings(user_id, chat_id=update.effective_chat.id)
+    event_filter = "upcoming"
+    if context.args:
+        event_filter = EVENT_FILTER_ALIASES.get(context.args[0].lower(), context.args[0].lower())
+    events = list_internal_events(user_id, event_filter=event_filter, limit=30)
+    await update.message.reply_text(_format_internal_events(events, f"Agenda interna ({event_filter})"))
+
+
 async def event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -1828,6 +2023,11 @@ async def event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_event_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     upsert_user_settings(user_id, chat_id=update.effective_chat.id)
+    if not _calendar_uses_google():
+        await update.message.reply_text(
+            "Google Calendar esta desativado. Com CALENDAR_BACKEND=internal, eventos ja sao criados direto na agenda interna."
+        )
+        return
     if not context.args:
         await update.message.reply_text("Uso: /confirm_event <id>")
         return
@@ -1881,10 +2081,12 @@ async def cancel_event_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("ID de evento invalido.")
         return
 
-    if delete_pending_calendar_event(pending_id, user_id):
-        await update.message.reply_text(f"Evento pendente {pending_id} cancelado.")
+    if cancel_internal_event(pending_id, user_id):
+        await update.message.reply_text(f"Evento interno {pending_id} cancelado.")
+    elif delete_pending_calendar_event(pending_id, user_id):
+        await update.message.reply_text(f"Evento pendente do Google Calendar {pending_id} cancelado.")
     else:
-        await update.message.reply_text("Evento pendente nao encontrado.")
+        await update.message.reply_text("Evento nao encontrado.")
 
 
 async def send_daily_summaries(context: ContextTypes.DEFAULT_TYPE):
@@ -1905,6 +2107,27 @@ async def send_daily_summaries(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_meeting_reminders(context: ContextTypes.DEFAULT_TYPE):
+    if _calendar_uses_internal():
+        for event in get_due_internal_event_reminders():
+            start_at = _parse_event_datetime(event.get("start_at"))
+            if not start_at:
+                continue
+            try:
+                await context.bot.send_message(
+                    chat_id=event["chat_id"],
+                    text=(
+                        f"Alerta da agenda: {event['summary']}\n"
+                        f"Comeca em {event.get('reminder_minutes', 15)} minuto(s): "
+                        f"{start_at.strftime('%d/%m/%Y %H:%M')}"
+                    ),
+                )
+                mark_internal_event_reminded(event["id"])
+            except Exception:
+                continue
+
+    if not _calendar_uses_google():
+        return
+
     start_window = datetime.now().astimezone()
     for user in get_users_with_meeting_reminders():
         reminder_minutes = user.get("meeting_reminder_minutes") or 15
@@ -1922,7 +2145,7 @@ async def send_meeting_reminders(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=user["chat_id"],
-                    text=f"Aviso de reuniao: {summary}\nComeca em ate {reminder_minutes} minuto(s): {start}",
+                    text=f"Aviso do Google Calendar: {summary}\nComeca em ate {reminder_minutes} minuto(s): {start}",
                 )
             except Exception:
                 continue
@@ -2478,11 +2701,20 @@ async def drive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def calendar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        result = list_upcoming_events()
-    except Exception as e:
-        result = f"Erro ao acessar o Calendar: {e}"
-    await update.message.reply_text(result, parse_mode='Markdown')
+    user_id = update.effective_user.id
+    upsert_user_settings(user_id, chat_id=update.effective_chat.id)
+
+    parts = [f"Backend de agenda: {_calendar_backend()}"]
+    if _calendar_uses_internal():
+        parts.append(_format_internal_events(list_internal_events(user_id, "upcoming", limit=10), "Agenda interna"))
+
+    if _calendar_uses_google():
+        try:
+            parts.append("Google Calendar:\n" + list_upcoming_events())
+        except Exception as e:
+            parts.append(f"Google Calendar: erro ao acessar: {e}")
+
+    await update.message.reply_text("\n\n".join(parts))
 
 async def docs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
