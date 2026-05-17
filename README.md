@@ -7,7 +7,7 @@ Bot do Telegram com integração de IA (Google Gemini) que oferece conversação
 - 💬 **Conversação com IA**: Integração com Google Gemini para respostas inteligentes
 - 📝 **Tarefas Inteligentes**: Adicione, liste e complete tarefas com prazo, prioridade, categoria, recorrência e lembretes
 - 🔍 **Busca na Web**: Pesquise informações diretamente do Telegram
-- 🎙️ **Transcrição de Áudio**: Converta mensagens de voz em texto com Gemini
+- 🎙️ **Comandos por Áudio**: Converta mensagens de voz em texto com Gemini e crie tarefas, lembretes e eventos por voz
 - 🖼️ **Análise de Imagens**: Envie fotos e receba análises da IA
 - 🧠 **Memória de Conversa**: Contexto das últimas interações para respostas mais coerentes
 - 🧩 **Memória Pessoal Persistente**: Salve fatos importantes com `/remember` ou mensagens como "lembre que..."
@@ -100,6 +100,8 @@ Se não usar `TELEGRAM_WEBHOOK_SECRET`, remova o parâmetro `secret_token`.
 | `/start` | Inicia o bot e exibe mensagem de boas-vindas |
 | `/help` | Mostra lista de comandos disponíveis |
 | `/task <descrição>` | Adiciona uma nova tarefa. Entende `hoje`, `amanhã`, `dd/mm`, horário, `#categoria`, prioridade e recorrência |
+| `/remind <descrição>` | Atalho para criar lembretes. Ex: `/remind tomar remédio em 30 minutos` |
+| `/reminder <descrição>` | Mesmo comportamento de `/remind` |
 | `/list [filtro] [#categoria]` | Lista tarefas. Filtros: `hoje`, `semana`, `atrasadas`, `concluidas`, `todas` |
 | `/tasks [filtro] [#categoria]` | Atalho para listar tarefas |
 | `/done <id>` | Marca uma tarefa como concluída |
@@ -152,8 +154,10 @@ Se não usar `TELEGRAM_WEBHOOK_SECRET`, remova o parâmetro `secret_token`.
 Além dos comandos, você pode:
 - 💬 Enviar mensagens de texto para conversar com a IA (com contexto das últimas interações)
 - 📝 Criar tarefas em linguagem natural, como `me lembre de pagar boleto amanhã às 9 #casa prioridade:alta`
+- ⏰ Criar lembretes em linguagem natural, como `crie um lembrete para tomar remédio em 30 minutos`
+- 🗓️ Criar eventos por texto ou áudio, como `crie uma reunião com Ana amanhã às 15h por 45min local: Meet`
 - 🖼️ Enviar fotos para análise
-- 🎙️ Enviar áudios/voice notes para transcrição
+- 🎙️ Enviar áudios/voice notes para transcrição e execução de instruções de agenda/lembrete
 
 ### Exemplos de tarefas inteligentes
 
@@ -161,6 +165,7 @@ Além dos comandos, você pode:
 /task pagar boleto amanhã às 9 #casa prioridade:alta
 /task revisar relatório em 3 dias p2 lembrete em 30 minutos
 /task enviar resumo toda semana sexta às 16 #trabalho
+/remind tomar remédio em 30 minutos
 /list hoje
 /list atrasadas
 /list semana #trabalho
@@ -168,6 +173,19 @@ Além dos comandos, você pode:
 
 Recorrências simples aceitas: `todo dia`, `semanal`/`toda semana` e `mensal`/`todo mês`.
 Os lembretes usam o `job_queue` do python-telegram-bot enquanto o bot estiver rodando em polling.
+
+### Eventos e lembretes por áudio
+
+O bot usa a mesma interpretação para texto e voice notes. Exemplos que funcionam por áudio:
+
+```text
+crie um lembrete para ligar para o João amanhã às 9 da manhã
+me avise de revisar a proposta em 30 minutos
+crie uma reunião com Ana amanhã às 3 da tarde por 45 minutos local: Google Meet
+marque compromisso dentista sexta às 14h por 1 hora
+```
+
+Eventos entram como pendentes e precisam de `/confirm_event <id>` antes de serem criados no Google Calendar.
 
 ### RAG e banco vetorial
 
