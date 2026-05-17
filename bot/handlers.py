@@ -91,6 +91,28 @@ TASK_PREFIXES = (
     "adicionar tarefa ",
     "nova tarefa ",
     "tarefa: ",
+    "crie um lembrete para ",
+    "crie um lembrete de ",
+    "crie um lembrete ",
+    "criar lembrete para ",
+    "criar lembrete de ",
+    "criar lembrete ",
+    "adicione um lembrete para ",
+    "adicione um lembrete de ",
+    "adicione um lembrete ",
+    "adicionar lembrete para ",
+    "adicionar lembrete de ",
+    "adicionar lembrete ",
+    "novo lembrete para ",
+    "novo lembrete de ",
+    "novo lembrete ",
+    "lembrete: ",
+    "lembrete para ",
+    "lembrete de ",
+    "me avise para ",
+    "me avise de ",
+    "avise-me para ",
+    "avise-me de ",
     "me lembre de ",
     "lembre-me de ",
     "me lembrar de ",
@@ -103,8 +125,25 @@ EVENT_PREFIXES = (
     "criar evento ",
     "adicione um evento ",
     "adicionar evento ",
+    "evento: ",
+    "crie uma reuniao ",
+    "crie uma reunião ",
+    "criar reuniao ",
+    "criar reunião ",
+    "adicione uma reuniao ",
+    "adicione uma reunião ",
+    "adicionar reuniao ",
+    "adicionar reunião ",
+    "reuniao: ",
+    "reunião: ",
+    "crie um compromisso ",
+    "criar compromisso ",
+    "adicione um compromisso ",
+    "adicionar compromisso ",
+    "compromisso: ",
     "agende ",
     "marque ",
+    "marcar ",
     "coloque na agenda ",
 )
 
@@ -240,6 +279,16 @@ def _extract_task_text(text):
     for prefix in TASK_PREFIXES:
         if lowered.startswith(prefix):
             return stripped[len(prefix):].strip()
+
+    polite_match = re.match(
+        r"^(?:por favor,\s*)?(?:raizito,\s*)?"
+        r"(?:cria|crie|criar|adiciona|adicione|adicionar|configura|configure)\s+"
+        r"(?:um\s+)?lembrete\s+(?:para|de)?\s*(.+)$",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    if polite_match:
+        return polite_match.group(1).strip()
     return None
 
 
@@ -248,7 +297,25 @@ def _extract_event_text(text):
     lowered = stripped.lower()
     for prefix in EVENT_PREFIXES:
         if lowered.startswith(prefix):
-            return stripped[len(prefix):].strip()
+            content = stripped[len(prefix):].strip()
+            if any(noun in prefix for noun in ("reuniao", "reunião")):
+                return f"reuniao {content}".strip()
+            if "compromisso" in prefix:
+                return f"compromisso {content}".strip()
+            if "evento" in prefix:
+                return f"evento {content}".strip()
+            return content
+
+    polite_match = re.match(
+        r"^(?:por favor,\s*)?(?:raizito,\s*)?"
+        r"(?:cria|crie|criar|adiciona|adicione|adicionar|agenda|agende|agendar|marca|marque|marcar)\s+"
+        r"(?:um|uma)?\s*(evento|reuniao|reunião|compromisso)\s*(.+)$",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    if polite_match:
+        noun = polite_match.group(1).replace("ã", "a")
+        return f"{noun} {polite_match.group(2).strip()}".strip()
     return None
 
 
@@ -275,10 +342,10 @@ def _parse_due_date(text):
 
     if re.search(r"\b(hoje)\b", lowered):
         return today
-    if re.search(r"\b(amanha|amanhã)\b", lowered):
-        return today + timedelta(days=1)
     if re.search(r"\b(depois de amanha|depois de amanhã)\b", lowered):
         return today + timedelta(days=2)
+    if re.search(r"\b(amanha|amanhã)\b", lowered):
+        return today + timedelta(days=1)
 
     days_match = re.search(r"\bem\s+(\d{1,3})\s+dias?\b", lowered)
     if days_match:
@@ -309,14 +376,26 @@ def _parse_due_date(text):
 
 def _parse_due_time(text):
     lowered = text.lower()
-    time_match = re.search(r"\b(?:as|às|a|@)\s*(\d{1,2})(?:[:h](\d{2}))?\b", lowered)
+    if re.search(r"\b(meio dia|meio-dia)\b", lowered):
+        return time(12, 0)
+    if re.search(r"\b(meia noite|meia-noite)\b", lowered):
+        return time(0, 0)
+
+    time_match = re.search(r"\b(?:as|às|a|@)\s*(\d{1,2})(?:[:h](\d{0,2}))?\b", lowered)
     if not time_match:
         time_match = re.search(r"\b(\d{1,2})h(\d{2})?\b", lowered)
+    if not time_match:
+        time_match = re.search(r"\b(\d{1,2})\s*horas?\b", lowered)
     if not time_match:
         return None
 
     hour = int(time_match.group(1))
     minute = int(time_match.group(2) or 0)
+    suffix = lowered[time_match.end():time_match.end() + 20]
+    if hour <= 11 and re.search(r"\b(da tarde|tarde|da noite|noite)\b", suffix):
+        hour += 12
+    if hour == 12 and re.search(r"\b(da madrugada|madrugada|da manha|da manhã)\b", suffix):
+        hour = 0
     if hour > 23 or minute > 59:
         return None
     return time(hour, minute)
@@ -359,7 +438,9 @@ def _parse_reminder_at(text, due_date, due_time):
     lowered = text.lower()
     now = datetime.now()
 
-    relative_match = re.search(r"\b(?:lembrete|lembrar)\s+em\s+(\d{1,3})\s*(min|minutos?|h|horas?)\b", lowered)
+    relative_match = re.search(r"\b(?:lembrete|lembrar)\s+em\s+(\d{1,3})\s*(minutos?|min|horas?|h)\b", lowered)
+    if not relative_match:
+        relative_match = re.search(r"\bem\s+(\d{1,3})\s*(minutos?|min|horas?|h)\b", lowered)
     if relative_match:
         amount = int(relative_match.group(1))
         unit = relative_match.group(2)
@@ -386,9 +467,13 @@ def _clean_task_title(text):
         r"\bem\s+\d{1,3}\s+dias?\b",
         r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b",
         r"\b(?:segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)\b",
-        r"\b(?:as|às|a|@)\s*\d{1,2}(?:[:h]\d{2})?\b",
+        r"\b(?:as|às|a|@)\s*\d{1,2}(?:[:h]\d{0,2})?\b",
         r"\b\d{1,2}h\d{0,2}\b",
-        r"\b(?:lembrete|lembrar)\s+em\s+\d{1,3}\s*(?:min|minutos?|h|horas?)\b",
+        r"\b\d{1,2}\s*horas?\b",
+        r"\b(meio dia|meio-dia|meia noite|meia-noite)\b",
+        r"\b(da tarde|tarde|da noite|noite|da madrugada|madrugada|da manha|da manhã)\b",
+        r"\b(?:lembrete|lembrar)\s+em\s+\d{1,3}\s*(?:minutos?|min|horas?|h)\b",
+        r"\bem\s+\d{1,3}\s*(?:minutos?|min|horas?|h)\b",
     ]
     for pattern in cleanup_patterns:
         cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
@@ -402,6 +487,13 @@ def _parse_task_payload(text):
     category = _parse_category(text)
     recurrence = _parse_recurrence(text)
     reminder_at = _parse_reminder_at(text, due_date, due_time)
+    if reminder_at and not due_date:
+        try:
+            reminder_dt = datetime.fromisoformat(reminder_at)
+            due_date = reminder_dt.date()
+            due_time = reminder_dt.time().replace(second=0, microsecond=0)
+        except ValueError:
+            pass
     title = _clean_task_title(text)
 
     return {
@@ -478,7 +570,7 @@ def _task_created_message(task_id, payload):
 
 def _parse_duration_minutes(text, default_minutes=60):
     lowered = text.lower()
-    duration_match = re.search(r"\b(?:por|duracao|duração)\s+(\d{1,3})\s*(min|minutos?|h|horas?)\b", lowered)
+    duration_match = re.search(r"\b(?:por|duracao|duração)\s+(\d{1,3})\s*(minutos?|min|horas?|h)\b", lowered)
     if not duration_match:
         return default_minutes
     amount = int(duration_match.group(1))
@@ -511,11 +603,12 @@ def _parse_event_attendees(text):
 def _clean_event_title(text):
     cleaned = _clean_task_title(text)
     cleaned = re.sub(
-        r"\b(?:por|duracao|duração)\s+\d{1,3}\s*(?:min|minutos?|h|horas?)\b",
+        r"\b(?:por|duracao|duração)\s+\d{1,3}\s*(?:minutos?|min|horas?|h)\b",
         " ",
         cleaned,
         flags=re.IGNORECASE,
     )
+    cleaned = re.sub(r"\b(?:por|duracao|duração)\b\s*$", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:local|lugar|onde|desc|descricao|descrição|nota|obs)\s*:\s*.+?(?=\s+\w+\s*:|$)", " ", cleaned, flags=re.IGNORECASE)
     cleaned = EMAIL_RE.sub(" ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip(" -,.") or text.strip()
@@ -966,6 +1059,35 @@ async def _create_pending_event_from_text(update, user_id, chat_id, text):
     await update.message.reply_text("\n\n".join(message_parts))
 
 
+async def _handle_structured_instruction(update, user_id, chat_id, text):
+    memory_text = _extract_memory_text(text)
+    if memory_text:
+        memory_id = add_memory(user_id, memory_text)
+        await update.message.reply_text(f"Memoria salva. ID: {memory_id}")
+        return True
+
+    if text.strip().lower() in MEMORY_LIST_REQUESTS:
+        await update.message.reply_text(_format_memories(get_memories(user_id)))
+        return True
+
+    task_text = _extract_task_text(text)
+    if task_text:
+        await _create_task_from_text(update, user_id, task_text)
+        return True
+
+    event_text = _extract_event_text(text)
+    if event_text:
+        await _create_pending_event_from_text(update, user_id, chat_id, event_text)
+        return True
+
+    mission_goal = _extract_mission_goal(text)
+    if mission_goal:
+        await _create_mission_from_goal(update, user_id, mission_goal)
+        return True
+
+    return False
+
+
 def _format_memories(memories):
     if not memories:
         return "Ainda nao tenho memorias salvas sobre voce."
@@ -1394,6 +1516,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /start - Start the bot
 /help - Show this help
 /task <text> - Add a task. Ex: /task pagar boleto amanha as 9 #casa prioridade:alta
+/remind <text> - Add a reminder. Ex: /remind tomar remedio em 30 minutos
 /list [hoje|semana|atrasadas|concluidas|todas] [#categoria] - List tasks
 /done <id> - Mark a task as completed
 /today - Daily briefing with agenda, tasks and context
@@ -1431,15 +1554,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *Features:*
 - Conversas com memória: mantenho o contexto das últimas mensagens.
 - Memoria pessoal persistente: diga "lembre que..." para eu guardar fatos importantes.
-- Tarefas inteligentes: entendo prazo, prioridade, categoria, recorrencia e lembretes simples.
-- Agenda inteligente: gero briefing diario e preparo eventos com confirmacao.
+- Tarefas e lembretes inteligentes: entendo prazo, prioridade, categoria, recorrencia e alertas como "em 30 minutos".
+- Agenda inteligente: preparo eventos, reunioes e compromissos no Calendar com confirmacao.
 - E-mails inteligentes: resumo, prioridade heuristica e busca semantica via RAG.
 - Drive/Docs inteligentes: indexo arquivos e resumo documentos Google Docs.
 - Modo agente: transformo metas em missoes com passos, checkpoints e relatorios.
 - RAG: uso a base vetorial configurada para recuperar memorias, tarefas e docs relevantes.
 - Send me any text to chat with AI.
 - Send me a photo to analyze it.
-- Send me a voice note to transcribe and answer.
+- Send me a voice note to transcribe and handle commands like reminders and events.
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -1449,29 +1572,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     upsert_user_settings(user_id, chat_id=chat_id)
 
-    memory_text = _extract_memory_text(user_text)
-    if memory_text:
-        memory_id = add_memory(user_id, memory_text)
-        await update.message.reply_text(f"Memoria salva. ID: {memory_id}")
-        return
-
-    if user_text.strip().lower() in MEMORY_LIST_REQUESTS:
-        await update.message.reply_text(_format_memories(get_memories(user_id)))
-        return
-
-    task_text = _extract_task_text(user_text)
-    if task_text:
-        await _create_task_from_text(update, user_id, task_text)
-        return
-
-    event_text = _extract_event_text(user_text)
-    if event_text:
-        await _create_pending_event_from_text(update, user_id, chat_id, event_text)
-        return
-
-    mission_goal = _extract_mission_goal(user_text)
-    if mission_goal:
-        await _create_mission_from_goal(update, user_id, mission_goal)
+    if await _handle_structured_instruction(update, user_id, chat_id, user_text):
         return
 
     history = get_conversation_history(user_id)
@@ -1525,25 +1626,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         upsert_user_settings(user_id, chat_id=chat_id)
-        memory_text = _extract_memory_text(text)
-        if memory_text:
-            memory_id = add_memory(user_id, memory_text)
-            await update.message.reply_text(f"Memoria salva. ID: {memory_id}")
-            return
-
-        task_text = _extract_task_text(text)
-        if task_text:
-            await _create_task_from_text(update, user_id, task_text)
-            return
-
-        event_text = _extract_event_text(text)
-        if event_text:
-            await _create_pending_event_from_text(update, user_id, chat_id, event_text)
-            return
-
-        mission_goal = _extract_mission_goal(text)
-        if mission_goal:
-            await _create_mission_from_goal(update, user_id, mission_goal)
+        if await _handle_structured_instruction(update, user_id, chat_id, text):
             return
 
         history = get_conversation_history(user_id)

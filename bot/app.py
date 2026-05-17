@@ -100,6 +100,8 @@ def build_application():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("task", add_task_command))
+    app.add_handler(CommandHandler("remind", add_task_command))
+    app.add_handler(CommandHandler("reminder", add_task_command))
     app.add_handler(CommandHandler("tasks", list_tasks_command))
     app.add_handler(CommandHandler("list", list_tasks_command))
     app.add_handler(CommandHandler("done", complete_task_command))
