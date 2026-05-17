@@ -166,11 +166,16 @@ Use apenas em plano que não hiberne. O plano gratuito pode parar por inatividad
    TELEGRAM_TOKEN=seu_token_aqui
    GEMINI_API_KEY=sua_key_aqui
    CALENDAR_BACKEND=internal
+   ASSISTANT_PERSONA=
    ```
 
    `CALENDAR_BACKEND=internal` desativa a criação/listagem no Google Calendar
    para os eventos do bot e usa a agenda interna com alertas por Telegram. Para
    voltar ao Google Calendar, troque para `google`; para usar os dois, `both`.
+
+   `ASSISTANT_PERSONA` pode ficar vazio para usar a persona padrão do Raizito:
+   um assistente pessoal digital com postura mais humana, tom direto, contextual
+   e discreto.
 
    Para usar Supabase como banco vetorial do RAG, rode `supabase/knowledge_items.sql`
    no SQL Editor do Supabase e adicione também:

@@ -66,6 +66,7 @@ Para configurar as chaves de API necessárias (Google Search, Gmail, Drive, etc.
    - `TELEGRAM_WEBHOOK_SECRET`: segredo opcional para proteger o webhook do Telegram
    - `GEMINI_API_KEY`: Key do [Google AI Studio](https://aistudio.google.com/)
    - `GEMINI_MODEL`: Modelo Gemini opcional (padrão: `gemini-2.5-flash`)
+   - `ASSISTANT_PERSONA`: Persona opcional para ajustar o tom humano do assistente
    - `GOOGLE_SEARCH_API_KEY` e `GOOGLE_SEARCH_CX`: Chaves do Google Custom Search
    - `GOOGLE_SERVICE_ACCOUNT_FILE`: JSON do service account com acesso a Gmail/Drive/Calendar/Docs
    - `GOOGLE_DELEGATED_USER`: (opcional) usuário a ser impersonado ao usar o service account
@@ -161,6 +162,12 @@ Além dos comandos, você pode:
 - 🗓️ Criar eventos por texto ou áudio, como `crie uma reunião com Ana amanhã às 15h por 45min local: Meet`
 - 🖼️ Enviar fotos para análise
 - 🎙️ Enviar áudios/voice notes para transcrição e execução de instruções de agenda/lembrete
+
+### Persona do assistente
+
+Nas conversas normais, o bot usa uma persona fixa do Raizito: assistente pessoal digital com postura de assistente humano, tom calmo, direto, contextual e discreto. Ele usa memórias e contexto recuperado de forma natural, sem citar mecanismos internos como RAG ou banco de dados.
+
+Para sobrescrever a persona sem alterar o código, defina `ASSISTANT_PERSONA` no `.env`. Se a variável ficar vazia, a persona padrão é usada.
 
 ### Exemplos de tarefas inteligentes
 
