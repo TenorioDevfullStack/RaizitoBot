@@ -1,16 +1,24 @@
-version: '3.8'
-
 services:
   raizitobot:
     build: .
     container_name: raizitobot
     restart: unless-stopped
+    ports:
+      - "${ADMIN_PANEL_BIND:-127.0.0.1}:${ADMIN_PANEL_PORT:-8080}:${ADMIN_PANEL_PORT:-8080}"
     environment:
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
       - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - DB_PATH=${DB_PATH:-data/bot_data.db}
+      - ADMIN_PANEL_ENABLED=${ADMIN_PANEL_ENABLED:-false}
+      - ADMIN_PANEL_HOST=${ADMIN_PANEL_HOST:-0.0.0.0}
+      - ADMIN_PANEL_PORT=${ADMIN_PANEL_PORT:-8080}
+      - ADMIN_PANEL_TOKEN=${ADMIN_PANEL_TOKEN:-}
+      - ADMIN_PANEL_BACKUP_DIR=${ADMIN_PANEL_BACKUP_DIR:-data/backups}
+      - LOG_FILE=${LOG_FILE:-data/bot.log}
+      - ENFORCE_AUTHORIZED_USERS=${ENFORCE_AUTHORIZED_USERS:-false}
+      - AUTHORIZED_USER_IDS=${AUTHORIZED_USER_IDS:-}
       - RAG_VECTOR_BACKEND=${RAG_VECTOR_BACKEND:-sqlite}
       - RAG_SUPABASE_FALLBACK_TO_SQLITE=${RAG_SUPABASE_FALLBACK_TO_SQLITE:-true}
       - SUPABASE_URL=${SUPABASE_URL:-}

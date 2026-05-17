@@ -20,5 +20,7 @@ COPY . .
 # Create directory for database
 RUN mkdir -p /app/data
 
+EXPOSE 8080
+
 # Run the bot
 CMD ["python", "main.py"]

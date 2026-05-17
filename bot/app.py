@@ -1,8 +1,18 @@
 import os
 
 from dotenv import load_dotenv
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    ApplicationHandlerStop,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
+from telegram import Update
 
+from bot.db import is_authorized_user_active, observe_authorized_user, upsert_authorized_user
 from bot.handlers import (
     start_command, help_command, handle_message,
     add_task_command, list_tasks_command, complete_task_command,
@@ -22,6 +32,63 @@ from bot.handlers import (
 load_dotenv()
 
 
+def _env_flag(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on", "sim"}
+
+
+def _authorized_ids_from_env():
+    ids = set()
+    for raw in (os.getenv("AUTHORIZED_USER_IDS") or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            ids.add(int(raw))
+        except ValueError:
+            continue
+    return ids
+
+
+def _user_full_name(user):
+    parts = [user.first_name, user.last_name]
+    return " ".join(part for part in parts if part)
+
+
+async def authorization_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user:
+        return
+
+    env_authorized_ids = _authorized_ids_from_env()
+    username = user.username
+    full_name = _user_full_name(user)
+
+    if user.id in env_authorized_ids:
+        upsert_authorized_user(
+            user.id,
+            username=username,
+            full_name=full_name,
+            is_active=True,
+            source="env",
+            mark_seen=True,
+        )
+        return
+
+    observe_authorized_user(user.id, username=username, full_name=full_name)
+    if not _env_flag("ENFORCE_AUTHORIZED_USERS", False):
+        return
+
+    if is_authorized_user_active(user.id):
+        return
+
+    if update.effective_message:
+        await update.effective_message.reply_text("Acesso nao autorizado para este bot.")
+    raise ApplicationHandlerStop
+
+
 def build_application():
     token = os.getenv("TELEGRAM_TOKEN")
     if not token:
@@ -29,6 +96,7 @@ def build_application():
 
     app = ApplicationBuilder().token(token).build()
 
+    app.add_handler(TypeHandler(Update, authorization_guard), group=-1)
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("task", add_task_command))
