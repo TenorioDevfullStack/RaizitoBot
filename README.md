@@ -25,6 +25,7 @@ Bot do Telegram com integração de IA (Google Gemini) que oferece conversação
 Para colocar o bot em produção, consulte o **[Guia de Deploy](DEPLOY.md)** completo com instruções para:
 
 - ⭐ **Railway** (recomendado - gratuito e fácil)
+- 🖥️ **Google Compute Engine VM** (systemd, serviço contínuo)
 - ▲ **Vercel** (webhook serverless)
 - 🌐 **Render** (alternativa gratuita)
 - 🐳 **Docker** (VPS/servidor próprio)

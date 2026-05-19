@@ -21,12 +21,91 @@ Antes de fazer o deploy, você precisa:
 
 Para este bot, prefira um serviço contínuo 24/7 rodando `python main.py`:
 
+- **Google Compute Engine VM com systemd**: recomendado quando você já tem uma VM Google rodando o bot.
 - **VPS com Docker**: opção mais previsível para produção, com banco SQLite persistente em `./data`.
 - **Railway/serviço similar com volume persistente**: funciona bem se configurado como serviço contínuo, não como função serverless.
 
 Evite depender do Windows local. Se o processo `python main.py` parar, o Telegram continua recebendo mensagens, mas ninguém consome os updates.
 
 Também evite plano gratuito que hiberna para produção. Bots em polling precisam ficar ativos o tempo todo.
+
+## 🎯 Opção Recomendada: Google Compute Engine VM com systemd
+
+Use esta opção quando o bot deve rodar direto em uma VM Linux da Google, sem nenhum processo local no Windows.
+
+### Passo a Passo
+
+1. **Conecte na VM**
+   ```bash
+   ssh usuario@IP_DA_VM
+   ```
+
+2. **Clone ou atualize o repositório**
+   ```bash
+   git clone https://github.com/TenorioDevfullStack/RaizitoBot.git
+   cd RaizitoBot
+   ```
+
+   Se o repositório já existe na VM:
+   ```bash
+   cd /caminho/para/RaizitoBot
+   git pull
+   ```
+
+3. **Configure o `.env` na VM**
+   ```bash
+   cp .env.example .env
+   nano .env
+   ```
+
+   Variáveis mínimas:
+   ```env
+   TELEGRAM_TOKEN=seu_token_aqui
+   GEMINI_API_KEY=sua_key_aqui
+   APP_TIMEZONE=America/Sao_Paulo
+   DB_PATH=data/bot_data.db
+   LOG_FILE=data/bot.log
+   CALENDAR_BACKEND=internal
+   ```
+
+4. **Instale e inicie o serviço**
+   ```bash
+   bash scripts/install_vm_service.sh
+   ```
+
+   O script instala dependências do sistema quando `apt-get` estiver disponível, cria o `.venv`, instala `requirements.txt` e registra o serviço `raizitobot` no systemd.
+
+5. **Garanta polling na VM**
+   ```bash
+   source .env
+   curl "https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook"
+   ```
+
+   Use este comando se o bot já tiver sido usado por webhook em Vercel, Cloud Run ou outro serviço. Em VM com `python main.py`, o bot consome mensagens por polling.
+
+6. **Verifique logs e status**
+   ```bash
+   sudo systemctl status raizitobot --no-pager
+   sudo journalctl -u raizitobot -f
+   ```
+
+7. **Atualizar código na VM**
+   ```bash
+   cd /caminho/para/RaizitoBot
+   git pull
+   sudo systemctl restart raizitobot
+   sudo journalctl -u raizitobot -f
+   ```
+
+8. **Parar ou reiniciar**
+   ```bash
+   sudo systemctl restart raizitobot
+   sudo systemctl stop raizitobot
+   ```
+
+✅ **Bot rodando na VM Google como serviço persistente.**
+
+---
 
 ## 🎯 Opção 1: Railway
 
