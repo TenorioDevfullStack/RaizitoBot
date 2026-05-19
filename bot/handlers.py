@@ -288,6 +288,19 @@ DOC_FILES = (
     "DEPLOY.md",
 )
 
+TASK_PRIORITY_LABELS = {
+    "alta": "🔴 Alta",
+    "media": "🟠 Média",
+    "normal": "⚪ Normal",
+    "baixa": "🟢 Baixa",
+}
+
+TASK_RECURRENCE_LABELS = {
+    "diaria": "Diária",
+    "semanal": "Semanal",
+    "mensal": "Mensal",
+}
+
 DEFAULT_ASSISTANT_PERSONA = """
 Persona fixa do assistente:
 Voce e o Raizito, um assistente pessoal digital com postura de assistente humano
@@ -807,7 +820,7 @@ def _format_task_due(task):
     due_date = task.get("due_date")
     due_time = task.get("due_time")
     if not due_date:
-        return "sem prazo"
+        return "Sem prazo"
 
     try:
         formatted = date.fromisoformat(due_date).strftime("%d/%m/%Y")
@@ -815,32 +828,90 @@ def _format_task_due(task):
         formatted = due_date
 
     if due_time:
-        formatted += f" {due_time}"
+        formatted += f" às {due_time}"
     return formatted
 
 
-def _format_task_line(task):
-    status = "OK" if task["is_completed"] else "PEND"
+def _format_payload_due(payload):
+    due_date = payload.get("due_date")
+    due_time = payload.get("due_time")
+    if not due_date:
+        return None
+    try:
+        formatted = date.fromisoformat(due_date).strftime("%d/%m/%Y")
+    except ValueError:
+        formatted = due_date
+    if due_time:
+        formatted += f" às {due_time}"
+    return formatted
+
+
+def _format_datetime_value(value):
+    parsed = parse_local_datetime(value)
+    if parsed:
+        return parsed.strftime("%d/%m/%Y às %H:%M")
+    return value
+
+
+def _format_task_reminder(task):
+    reminder_at = task.get("reminder_at")
+    if not reminder_at:
+        return None
+    return _format_datetime_value(reminder_at)
+
+
+def _format_task_priority(task):
+    priority = (task.get("priority") or "normal").lower()
+    return TASK_PRIORITY_LABELS.get(priority, priority.capitalize())
+
+
+def _format_task_status(task):
+    return "✅ Concluída" if task["is_completed"] else "🟡 Pendente"
+
+
+def _format_task_summary_line(task):
     parts = [
-        f"{task['id']}. [{status}] {task['title']}",
-        f"prazo: {_format_task_due(task)}",
-        f"prioridade: {task.get('priority') or 'normal'}",
+        f"#{task['id']} {task['title']}",
+        f"📅 {_format_task_due(task)}",
+        f"Prioridade: {_format_task_priority(task)}",
     ]
     if task.get("category"):
-        parts.append(f"categoria: {task['category']}")
-    if task.get("recurrence"):
-        parts.append(f"recorrencia: {task['recurrence']}")
+        parts.append(f"🏷️ {task['category']}")
     if task.get("reminder_at"):
-        parts.append(f"lembrete: {task['reminder_at']}")
-    return " | ".join(parts)
+        parts.append(f"⏰ {_format_task_reminder(task)}")
+    return " · ".join(parts)
+
+
+def _format_task_card(task):
+    header_icon = "✅" if task["is_completed"] else ("⏰" if task.get("reminder_at") else "📝")
+    lines = [
+        f"{header_icon} #{task['id']} · {task['title']}",
+        f"   Status: {_format_task_status(task)}",
+        f"   📅 Prazo: {_format_task_due(task)}",
+        f"   🚦 Prioridade: {_format_task_priority(task)}",
+    ]
+    if task.get("category"):
+        lines.append(f"   🏷️ Categoria: {task['category']}")
+    if task.get("recurrence"):
+        recurrence = TASK_RECURRENCE_LABELS.get(task["recurrence"], task["recurrence"])
+        lines.append(f"   🔁 Recorrência: {recurrence}")
+    if task.get("reminder_at"):
+        lines.append(f"   ⏰ Lembrete: {_format_task_reminder(task)}")
+    return "\n".join(lines)
+
+
+def _format_task_line(task):
+    return _format_task_card(task)
 
 
 def _format_tasks(tasks, title="Tarefas"):
     if not tasks:
-        return "Nenhuma tarefa encontrada."
+        return f"📭 {title}\nNenhum item encontrado."
 
-    lines = [f"{title}:"]
-    lines.extend(_format_task_line(task) for task in tasks)
+    lines = [f"📋 {title} · {len(tasks)} item(ns)"]
+    for task in tasks:
+        lines.append("")
+        lines.append(_format_task_card(task))
     return "\n".join(lines)
 
 
@@ -855,21 +926,20 @@ def _task_list_title(task_filter="pending", category=None, require_reminder=Fals
 
 def _task_created_message(task_id, payload):
     details = [
-        f"Tarefa criada. ID: {task_id}",
-        f"Titulo: {payload['title']}",
+        f"✅ Tarefa criada",
+        f"🆔 ID: #{task_id}",
+        f"📝 Título: {payload['title']}",
     ]
     if payload.get("due_date"):
-        due = payload["due_date"]
-        if payload.get("due_time"):
-            due += f" {payload['due_time']}"
-        details.append(f"Prazo: {due}")
-    details.append(f"Prioridade: {payload['priority']}")
+        details.append(f"📅 Prazo: {_format_payload_due(payload)}")
+    details.append(f"🚦 Prioridade: {TASK_PRIORITY_LABELS.get(payload['priority'], payload['priority'])}")
     if payload.get("category"):
-        details.append(f"Categoria: {payload['category']}")
+        details.append(f"🏷️ Categoria: {payload['category']}")
     if payload.get("recurrence"):
-        details.append(f"Recorrencia: {payload['recurrence']}")
+        recurrence = TASK_RECURRENCE_LABELS.get(payload["recurrence"], payload["recurrence"])
+        details.append(f"🔁 Recorrência: {recurrence}")
     if payload.get("reminder_at"):
-        details.append(f"Lembrete: {payload['reminder_at']}")
+        details.append(f"⏰ Lembrete: {_format_datetime_value(payload['reminder_at'])}")
     return "\n".join(details)
 
 
@@ -1439,19 +1509,19 @@ async def _edit_task_from_text(update, user_id, task_id, update_text, full_text=
 
     task = update_task(task_id, user_id, **updates)
     if not task:
-        await update.message.reply_text(f"Tarefa {task_id} nao encontrada.")
+        await update.message.reply_text(f"⚠️ Tarefa #{task_id} nao encontrada.")
         return
 
-    await update.message.reply_text("Tarefa atualizada:\n" + _format_task_line(task))
+    await update.message.reply_text("✅ Tarefa atualizada\n\n" + _format_task_card(task))
 
 
 async def _delete_task_by_id(update, user_id, task_id):
     task = delete_task(task_id, user_id)
     if not task:
-        await update.message.reply_text(f"Tarefa {task_id} nao encontrada.")
+        await update.message.reply_text(f"⚠️ Tarefa #{task_id} nao encontrada.")
         return
 
-    await update.message.reply_text(f"Tarefa {task_id} excluida: {task['title']}")
+    await update.message.reply_text(f"🗑️ Tarefa excluida\n🆔 ID: #{task_id}\n📝 {task['title']}")
 
 
 async def _complete_task_by_id(update, user_id, task_id):
@@ -1459,12 +1529,12 @@ async def _complete_task_by_id(update, user_id, task_id):
     if result["completed"]:
         if result["next_task_id"]:
             await update.message.reply_text(
-                f"Tarefa {task_id} concluida. Proxima recorrencia criada com ID {result['next_task_id']}."
+                f"✅ Tarefa #{task_id} concluida.\n🔁 Proxima recorrencia criada: #{result['next_task_id']}."
             )
         else:
-            await update.message.reply_text(f"Tarefa {task_id} concluida.")
+            await update.message.reply_text(f"✅ Tarefa #{task_id} concluida.")
     else:
-        await update.message.reply_text(f"Tarefa {task_id} nao encontrada.")
+        await update.message.reply_text(f"⚠️ Tarefa #{task_id} nao encontrada.")
 
 
 async def _create_pending_event_from_text(update, user_id, chat_id, text):
@@ -1936,7 +2006,7 @@ def _task_digest(tasks, title):
     if not tasks:
         return f"{title}: nenhuma."
     lines = [f"{title}:"]
-    lines.extend(f"- {_format_task_line(task)}" for task in tasks[:10])
+    lines.extend(f"- {_format_task_summary_line(task)}" for task in tasks[:10])
     return "\n".join(lines)
 
 
@@ -2281,7 +2351,7 @@ async def delete_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def send_due_task_reminders(context: ContextTypes.DEFAULT_TYPE):
     for task in get_due_task_reminders():
-        message = "Lembrete de tarefa:\n" + _format_task_line(task)
+        message = "⏰ Lembrete de tarefa\n\n" + _format_task_card(task)
         try:
             await context.bot.send_message(chat_id=task["user_id"], text=message)
             mark_task_reminded(task["id"])
