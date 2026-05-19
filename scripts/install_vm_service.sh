@@ -23,6 +23,10 @@ fi
 chmod +x "$REPO_DIR/start_bot.sh"
 "$REPO_DIR/start_bot.sh" --prepare-only
 
+mkdir -p "$REPO_DIR/data" "$REPO_DIR/logs"
+sudo chown -R "$RUN_USER:$RUN_USER" "$REPO_DIR/data" "$REPO_DIR/logs"
+sudo chmod -R u+rwX "$REPO_DIR/data" "$REPO_DIR/logs"
+
 sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<SERVICE
 [Unit]
 Description=RaizitoBot Telegram bot
