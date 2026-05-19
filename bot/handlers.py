@@ -19,6 +19,7 @@ from bot.db import (
     confirm_mission_step,
     create_mission,
     delete_pending_calendar_event,
+    delete_task,
     delete_memory,
     get_email_draft,
     get_email_drafts,
@@ -48,6 +49,7 @@ from bot.db import (
     update_email_draft_status,
     update_mission_status,
     update_mission_step,
+    update_task,
     upsert_user_settings,
     upsert_knowledge_item,
 )
@@ -376,6 +378,100 @@ def _extract_task_text(text):
     return None
 
 
+def _extract_task_id_match(text):
+    return re.search(r"\b(?:tarefa|tarefas|lembrete|lembretes)\s*#?(\d+)\b|#(\d+)\b", text, re.IGNORECASE)
+
+
+def _extract_task_id(text):
+    match = _extract_task_id_match(text)
+    if not match:
+        return None
+    return int(match.group(1) or match.group(2))
+
+
+def _parse_task_filter_and_category(text):
+    lowered = text.lower()
+    task_filter = "pending"
+    category = None
+    require_reminder = bool(re.search(r"\b(lembretes?|reminders?)\b", lowered))
+
+    for raw in re.findall(r"#([\wÀ-ÿ-]+)|\b(?:categoria|cat)[:=]\s*([\wÀ-ÿ-]+)", text, re.IGNORECASE):
+        category = (raw[0] or raw[1]).lower()
+
+    for alias, normalized in TASK_FILTER_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", lowered):
+            task_filter = normalized
+            break
+
+    if re.search(r"\b(pendentes?|abertas?|a fazer)\b", lowered):
+        task_filter = "pending"
+    if re.search(r"\b(concluidas|concluídas|finalizadas|feitas)\b", lowered):
+        task_filter = "completed"
+
+    if re.search(r"\b(tarefas?|tasks?)\s+com\s+(?:lembrete|alerta|aviso)\b", lowered):
+        require_reminder = True
+
+    return task_filter, category, require_reminder
+
+
+def _is_task_list_request(text):
+    lowered = text.strip().lower()
+    if lowered in {"minhas tarefas", "meus lembretes", "tarefas", "lembretes"}:
+        return True
+    if re.search(r"\bo que (?:eu )?tenho (?:para|pra) fazer\b", lowered):
+        return True
+    if not re.search(r"\b(tarefas?|lembretes?)\b", lowered):
+        return False
+    return bool(re.match(
+        r"^(?:por favor,\s*)?(?:raizito,\s*)?"
+        r"(?:lista|listar|liste|mostra|mostrar|mostre|ver|veja|quais|consultar|consulta)\b",
+        lowered,
+    ))
+
+
+def _is_task_complete_request(text):
+    lowered = text.lower()
+    if not _extract_task_id(lowered) or not re.search(r"\b(tarefas?|lembretes?)\b", lowered):
+        return False
+    return bool(re.search(
+        r"\b(concluir|conclua|concluido|concluida|concluído|concluída|complete|completar|feito|feita|"
+        r"finalizar|finalize|finalizada|terminar|terminei|marcar|marque|dar baixa)\b",
+        lowered,
+    ))
+
+
+def _is_task_delete_request(text):
+    lowered = text.lower()
+    if not _extract_task_id(lowered) or not re.search(r"\b(tarefas?|lembretes?)\b", lowered):
+        return False
+    return bool(re.search(
+        r"\b(excluir|exclua|apagar|apague|deletar|delete|remover|remova|cancelar|cancele)\b",
+        lowered,
+    ))
+
+
+def _extract_task_update_request(text):
+    match = _extract_task_id_match(text)
+    if not match:
+        return None
+
+    lowered = text.lower()
+    if not re.search(r"\b(editar|edite|alterar|altere|mudar|mude|atualizar|atualize|renomear|renomeie|modificar|modifique)\b", lowered):
+        return None
+    if not re.search(r"\b(tarefas?|lembretes?)\b", lowered):
+        return None
+
+    update_text = text[match.end():].strip()
+    update_text = re.sub(r"^(?:para|pra|como|com|:|-|,)\s+", "", update_text, flags=re.IGNORECASE).strip()
+    prefix = text[:match.start()]
+    return {
+        "task_id": int(match.group(1) or match.group(2)),
+        "update_text": update_text,
+        "prefix": prefix,
+        "full_text": text,
+    }
+
+
 def _extract_event_text(text):
     stripped = text.strip()
     lowered = stripped.lower()
@@ -531,7 +627,16 @@ def _parse_priority(text):
         return "media"
     if re.search(r"(\bbaixa\b|\bprioridade[:=]\s*baixa\b|\bp3\b)", lowered):
         return "baixa"
+    if re.search(r"\bprioridade[:=]?\s*normal\b|\bnormal\b", lowered):
+        return "normal"
     return "normal"
+
+
+def _mentions_priority(text):
+    return bool(re.search(
+        r"\b(prioridade|p1|p2|p3|urgente|alta|media|média|normal|baixa)\b",
+        text.lower(),
+    ))
 
 
 def _parse_category(text):
@@ -586,9 +691,8 @@ def _parse_reminder_at(text, due_date, due_time):
     return None
 
 
-def _clean_task_title(text):
-    cleaned = text.strip()
-    cleanup_patterns = [
+def _task_title_cleanup_patterns():
+    return [
         r"\b(?:prioridade|cat|categoria)[:=]\s*[\wÀ-ÿ-]+\b",
         r"(?:^|\s)#[\wÀ-ÿ-]+",
         r"\b(!alta|p1|p2|p3|urgente|prioridade alta|prioridade media|prioridade média|prioridade baixa)\b",
@@ -607,9 +711,18 @@ def _clean_task_title(text):
         r"\b(meio dia|meio-dia|meia noite|meia-noite)\b",
         r"\b(da tarde|tarde|da noite|noite|da madrugada|madrugada|da manha|da manhã)\b",
     ]
-    for pattern in cleanup_patterns:
+
+
+def _strip_task_metadata(text):
+    cleaned = text.strip()
+    cleaned = re.sub(r"^(?:titulo|título|nome|texto|descricao|descrição)\s*:\s*", "", cleaned, flags=re.IGNORECASE)
+    for pattern in _task_title_cleanup_patterns():
         cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", cleaned).strip(" -,.") or text.strip()
+    return re.sub(r"\s+", " ", cleaned).strip(" -,.")
+
+
+def _clean_task_title(text):
+    return _strip_task_metadata(text) or text.strip()
 
 
 def _parse_task_payload(text):
@@ -635,6 +748,59 @@ def _parse_task_payload(text):
         "recurrence": recurrence,
         "reminder_at": reminder_at,
     }
+
+
+def _parse_task_update_payload(update_text, full_text=None, prefix=""):
+    source_text = (full_text or update_text).strip()
+    lowered = source_text.lower()
+    update_lowered = (update_text or "").lower()
+    updates = {}
+    payload = _parse_task_payload(update_text or source_text)
+
+    if payload.get("due_date"):
+        updates["due_date"] = payload["due_date"]
+    if payload.get("due_time"):
+        updates["due_time"] = payload["due_time"]
+    if payload.get("reminder_at"):
+        updates["reminder_at"] = payload["reminder_at"]
+    if payload.get("category"):
+        updates["category"] = payload["category"]
+    if payload.get("recurrence"):
+        updates["recurrence"] = payload["recurrence"]
+    if _mentions_priority(source_text):
+        updates["priority"] = payload["priority"]
+
+    if re.search(r"\b(?:sem|remover|remove|tirar|tire|limpar|limpe)\s+(?:prazo|data|vencimento)\b", lowered):
+        updates["due_date"] = None
+        updates["due_time"] = None
+    if re.search(r"\b(?:sem|remover|remove|tirar|tire|limpar|limpe)\s+(?:horario|horário|hora)\b", lowered):
+        updates["due_time"] = None
+    if re.search(r"\b(?:sem|remover|remove|tirar|tire|limpar|limpe)\s+(?:lembrete|alerta|aviso)\b", lowered):
+        updates["reminder_at"] = None
+    if re.search(r"\b(?:sem|remover|remove|tirar|tire|limpar|limpe)\s+(?:categoria|tag)\b", lowered):
+        updates["category"] = None
+    if re.search(r"\b(?:sem|remover|remove|tirar|tire|limpar|limpe)\s+(?:recorrencia|recorrência|repeticao|repetição)\b", lowered):
+        updates["recurrence"] = None
+
+    prefix_has_field = bool(re.search(
+        r"\b(prazo|data|vencimento|horario|horário|hora|prioridade|categoria|tag|lembrete|alerta|aviso|recorrencia|recorrência)\b",
+        prefix.lower(),
+    ))
+    title_marker = bool(re.search(r"\b(titulo|título|nome|texto|descricao|descrição|renomear|renomeie)\b", lowered))
+    title_text = _strip_task_metadata(update_text)
+    title_text = re.sub(
+        r"\b(?:prazo|data|vencimento|horario|horário|hora|prioridade|categoria|tag|lembrete|alerta|aviso|recorrencia|recorrência)\b",
+        " ",
+        title_text,
+        flags=re.IGNORECASE,
+    )
+    title_text = re.sub(r"\s+", " ", title_text).strip(" -,.")
+    title_is_only_priority = title_text.lower() in {"alta", "media", "média", "normal", "baixa", "p1", "p2", "p3"}
+    title_is_clear_directive = bool(re.match(r"^(?:sem|remover|remove|tirar|tire|limpar|limpe)\b", update_lowered))
+    if title_text and not title_is_only_priority and not title_is_clear_directive and (title_marker or not prefix_has_field):
+        updates["title"] = title_text
+
+    return updates
 
 
 def _format_task_due(task):
@@ -676,6 +842,15 @@ def _format_tasks(tasks, title="Tarefas"):
     lines = [f"{title}:"]
     lines.extend(_format_task_line(task) for task in tasks)
     return "\n".join(lines)
+
+
+def _task_list_title(task_filter="pending", category=None, require_reminder=False):
+    title = "Lembretes" if require_reminder else "Tarefas"
+    if task_filter != "pending":
+        title += f" ({task_filter})"
+    if category:
+        title += f" #{category}"
+    return title
 
 
 def _task_created_message(task_id, payload):
@@ -1238,6 +1413,60 @@ async def _create_task_from_text(update, user_id, text):
     await update.message.reply_text(_task_created_message(task_id, payload))
 
 
+async def _reply_with_tasks(update, user_id, task_filter="pending", category=None, require_reminder=False):
+    tasks = get_tasks(
+        user_id,
+        task_filter=task_filter,
+        category=category,
+        require_reminder=require_reminder,
+    )
+    await update.message.reply_text(_format_tasks(tasks, _task_list_title(task_filter, category, require_reminder)))
+
+
+async def _edit_task_from_text(update, user_id, task_id, update_text, full_text=None, prefix=""):
+    if not update_text and not full_text:
+        await update.message.reply_text(
+            "Uso: /task_edit <id> <alteracoes>. Ex: /task_edit 12 revisar proposta amanha as 9 prioridade:alta"
+        )
+        return
+
+    updates = _parse_task_update_payload(update_text, full_text=full_text, prefix=prefix)
+    if not updates:
+        await update.message.reply_text(
+            "Nao entendi o que alterar. Ex: /task_edit 12 prazo amanha as 9, prioridade:alta ou titulo: revisar proposta"
+        )
+        return
+
+    task = update_task(task_id, user_id, **updates)
+    if not task:
+        await update.message.reply_text(f"Tarefa {task_id} nao encontrada.")
+        return
+
+    await update.message.reply_text("Tarefa atualizada:\n" + _format_task_line(task))
+
+
+async def _delete_task_by_id(update, user_id, task_id):
+    task = delete_task(task_id, user_id)
+    if not task:
+        await update.message.reply_text(f"Tarefa {task_id} nao encontrada.")
+        return
+
+    await update.message.reply_text(f"Tarefa {task_id} excluida: {task['title']}")
+
+
+async def _complete_task_by_id(update, user_id, task_id):
+    result = complete_task_with_recurrence(task_id, user_id)
+    if result["completed"]:
+        if result["next_task_id"]:
+            await update.message.reply_text(
+                f"Tarefa {task_id} concluida. Proxima recorrencia criada com ID {result['next_task_id']}."
+            )
+        else:
+            await update.message.reply_text(f"Tarefa {task_id} concluida.")
+    else:
+        await update.message.reply_text(f"Tarefa {task_id} nao encontrada.")
+
+
 async def _create_pending_event_from_text(update, user_id, chat_id, text):
     payload = _parse_event_payload(text)
     if not payload:
@@ -1319,6 +1548,31 @@ async def _handle_structured_instruction(update, user_id, chat_id, text):
 
     if text.strip().lower() in MEMORY_LIST_REQUESTS:
         await update.message.reply_text(_format_memories(get_memories(user_id)))
+        return True
+
+    if _is_task_list_request(text):
+        task_filter, category, require_reminder = _parse_task_filter_and_category(text)
+        await _reply_with_tasks(update, user_id, task_filter, category, require_reminder)
+        return True
+
+    task_update = _extract_task_update_request(text)
+    if task_update:
+        await _edit_task_from_text(
+            update,
+            user_id,
+            task_update["task_id"],
+            task_update["update_text"],
+            full_text=task_update["full_text"],
+            prefix=task_update["prefix"],
+        )
+        return True
+
+    if _is_task_complete_request(text):
+        await _complete_task_by_id(update, user_id, _extract_task_id(text))
+        return True
+
+    if _is_task_delete_request(text):
+        await _delete_task_by_id(update, user_id, _extract_task_id(text))
         return True
 
     task_text = _extract_task_text(text)
@@ -1790,10 +2044,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /task <text> - Add a task. Ex: /task pagar boleto amanha as 9 #casa prioridade:alta
 /remind <text> - Add a reminder. Ex: /remind tomar remedio em 30 minutos
 /list [hoje|semana|atrasadas|concluidas|todas] [#categoria] - List tasks
+/reminders [hoje|semana|atrasadas|concluidas|todas] [#categoria] - List task reminders
 /done <id> - Mark a task as completed
+/task_edit <id> <alteracoes> - Edit title, due date, time, priority, category, recurrence or reminder
+/task_delete <id> - Delete a task/reminder
 /today - Daily briefing with agenda, tasks and context
 /daily [on HH:MM|off|status] - Configure automatic daily briefing
-/reminders [on|off|minutes <n>|status] - Configure meeting reminders
+/meeting_reminders [on|off|minutes <n>|status] - Configure meeting reminders
 /event <text> - Create an internal agenda event, or Google event when enabled
 /events [hoje|semana|proximos|todas|cancelados] - List internal agenda events
 /agenda [hoje|semana|proximos|todas|cancelados] - Alias for /events
@@ -1829,6 +2086,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - Conversas com memória: mantenho o contexto das últimas mensagens.
 - Memoria pessoal persistente: diga "lembre que..." para eu guardar fatos importantes.
 - Tarefas e lembretes inteligentes: entendo prazo, prioridade, categoria, recorrencia e alertas como "em 30 minutos".
+- Gestao de tarefas por texto: liste, edite, conclua ou exclua tarefas pelo ID.
 - Agenda interna: crio eventos, reunioes e compromissos no banco do bot e envio alertas pelo Telegram.
 - E-mails inteligentes: resumo, prioridade heuristica e busca semantica via RAG.
 - Drive/Docs inteligentes: indexo arquivos e resumo documentos Google Docs.
@@ -1948,14 +2206,32 @@ async def list_tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         elif lowered.startswith("categoria:"):
             category = lowered.split(":", 1)[1]
 
-    tasks = get_tasks(user_id, task_filter=task_filter, category=category)
-    title = "Tarefas"
-    if task_filter != "pending":
-        title += f" ({task_filter})"
-    if category:
-        title += f" #{category}"
+    await _reply_with_tasks(update, user_id, task_filter, category)
 
-    await update.message.reply_text(_format_tasks(tasks, title))
+
+async def list_task_reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    upsert_user_settings(user_id, chat_id=update.effective_chat.id)
+    task_filter = "pending"
+    category = None
+
+    if context.args and context.args[0].lower() in {"on", "off", "minutes", "minutos", "status"}:
+        await update.message.reply_text(
+            "Para avisos de reuniao use /meeting_reminders. Para lembretes internos, use /reminders ou edite por ID."
+        )
+        return
+
+    for arg in context.args:
+        lowered = arg.lower()
+        if lowered in TASK_FILTER_ALIASES:
+            task_filter = TASK_FILTER_ALIASES[lowered]
+        elif lowered.startswith("#"):
+            category = lowered[1:]
+        elif lowered.startswith("categoria:"):
+            category = lowered.split(":", 1)[1]
+
+    await _reply_with_tasks(update, user_id, task_filter, category, require_reminder=True)
+
 
 async def complete_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1965,18 +2241,42 @@ async def complete_task_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
     try:
         task_id = int(context.args[0])
-        result = complete_task_with_recurrence(task_id, user_id)
-        if result["completed"]:
-            if result["next_task_id"]:
-                await update.message.reply_text(
-                    f"Tarefa {task_id} concluida. Proxima recorrencia criada com ID {result['next_task_id']}."
-                )
-            else:
-                await update.message.reply_text(f"Tarefa {task_id} concluida.")
-        else:
-            await update.message.reply_text(f"Tarefa {task_id} nao encontrada.")
+        await _complete_task_by_id(update, user_id, task_id)
     except ValueError:
         await update.message.reply_text("ID de tarefa invalido.")
+
+
+async def edit_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    upsert_user_settings(user_id, chat_id=update.effective_chat.id)
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Uso: /task_edit <id> <alteracoes>. Ex: /task_edit 12 revisar proposta amanha as 9 prioridade:alta"
+        )
+        return
+    try:
+        task_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID de tarefa invalido.")
+        return
+
+    update_text = " ".join(context.args[1:]).strip()
+    await _edit_task_from_text(update, user_id, task_id, update_text)
+
+
+async def delete_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    upsert_user_settings(user_id, chat_id=update.effective_chat.id)
+    if not context.args:
+        await update.message.reply_text("Uso: /task_delete <id>")
+        return
+    try:
+        task_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID de tarefa invalido.")
+        return
+
+    await _delete_task_by_id(update, user_id, task_id)
 
 
 async def send_due_task_reminders(context: ContextTypes.DEFAULT_TYPE):
@@ -2039,7 +2339,7 @@ async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Uso: /daily on HH:MM, /daily off ou /daily status")
 
 
-async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def meeting_reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     upsert_user_settings(user_id, chat_id=chat_id)
@@ -2066,7 +2366,7 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action in {"minutes", "minutos", "antecedencia", "antecedência"}:
         if len(context.args) < 2:
-            await update.message.reply_text("Uso: /reminders minutes <5-120>")
+            await update.message.reply_text("Uso: /meeting_reminders minutes <5-120>")
             return
         try:
             minutes = int(context.args[1])
@@ -2085,7 +2385,7 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Avisos configurados para {minutes} minuto(s) antes.")
         return
 
-    await update.message.reply_text("Uso: /reminders on, /reminders off, /reminders minutes <n> ou /reminders status")
+    await update.message.reply_text("Uso: /meeting_reminders on, /meeting_reminders off, /meeting_reminders minutes <n> ou /meeting_reminders status")
 
 
 async def events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

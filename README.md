@@ -113,14 +113,21 @@ Observação: SQLite local em serverless pode ser temporário. Para lembretes re
 | `/reminder <descrição>` | Mesmo comportamento de `/remind` |
 | `/list [filtro] [#categoria]` | Lista tarefas. Filtros: `hoje`, `semana`, `atrasadas`, `concluidas`, `todas` |
 | `/tasks [filtro] [#categoria]` | Atalho para listar tarefas |
+| `/reminders [filtro] [#categoria]` | Lista apenas tarefas que têm lembrete configurado |
+| `/lembretes [filtro] [#categoria]` | Atalho para `/reminders` |
 | `/done <id>` | Marca uma tarefa como concluída |
+| `/task_done <id>` | Atalho para marcar tarefa como concluída |
+| `/task_edit <id> <alterações>` | Edita título, prazo, horário, prioridade, categoria, recorrência ou lembrete |
+| `/edit_task <id> <alterações>` | Atalho para editar tarefa |
+| `/task_delete <id>` | Exclui uma tarefa ou lembrete interno |
+| `/delete_task <id>` | Atalho para excluir tarefa |
 | `/today` | Mostra briefing do dia com agenda, tarefas, prioridades e contexto |
 | `/daily on HH:MM` | Ativa resumo diário automático |
 | `/daily off` | Desativa resumo diário |
 | `/daily status` | Mostra configuração do resumo diário |
-| `/reminders status` | Mostra configuração dos avisos de reunião |
-| `/reminders minutes <n>` | Define antecedência dos avisos de reunião |
-| `/reminders on/off` | Ativa ou desativa avisos de reunião |
+| `/meeting_reminders status` | Mostra configuração dos avisos de reunião |
+| `/meeting_reminders minutes <n>` | Define antecedência dos avisos de reunião |
+| `/meeting_reminders on/off` | Ativa ou desativa avisos de reunião |
 | `/event <texto>` | Cria evento na agenda interna, com checagem de conflitos e alerta pelo Telegram |
 | `/events [hoje\|semana\|proximos\|todas\|cancelados]` | Lista eventos da agenda interna |
 | `/agenda [hoje\|semana\|proximos\|todas\|cancelados]` | Atalho para `/events` |
@@ -166,6 +173,7 @@ Além dos comandos, você pode:
 - 💬 Enviar mensagens de texto para conversar com a IA (com contexto das últimas interações)
 - 📝 Criar tarefas em linguagem natural, como `me lembre de pagar boleto amanhã às 9 #casa prioridade:alta`
 - ⏰ Criar lembretes em linguagem natural, como `crie um lembrete para tomar remédio em 30 minutos` ou `me lembra de alongar em alguns minutos`
+- ✅ Gerenciar tarefas e lembretes pelo mesmo ID, como `listar lembretes`, `concluir tarefa 12`, `alterar lembrete 12 para revisar proposta amanhã às 10 prioridade:alta` ou `excluir tarefa 12`
 - 🗓️ Criar eventos por texto ou áudio, como `crie uma reunião com Ana amanhã às 15h por 45min local: Meet`
 - 🖼️ Enviar fotos para análise
 - 🎙️ Enviar áudios/voice notes para transcrição e execução de instruções de agenda/lembrete
@@ -184,6 +192,7 @@ Para sobrescrever a persona sem alterar o código, defina `ASSISTANT_PERSONA` no
 /task enviar resumo toda semana sexta às 16 #trabalho
 /remind tomar remédio em 30 minutos
 /list hoje
+/reminders
 /list atrasadas
 /list semana #trabalho
 ```
@@ -308,13 +317,13 @@ Em um cliente MCP, configure o comando acima a partir da raiz do projeto e preen
 /today
 /daily on 08:00
 /daily status
-/reminders minutes 30
+/meeting_reminders minutes 30
 /event reunião com Ana amanhã às 10 por 45min local: Sala 2 desc: revisar proposta ana@example.com
 /events hoje
 /cancel_event 1
 ```
 
-Por padrão, a agenda usa `CALENDAR_BACKEND=internal`: os eventos ficam no SQLite do bot, entram no RAG, aparecem em `/today`, `/calendar`, `/events` e enviam alerta para o chat do Telegram conforme `/reminders minutes <n>`. Para reativar o Google Calendar depois, use `CALENDAR_BACKEND=google`; para manter agenda interna e também preparar evento no Google, use `CALENDAR_BACKEND=both`.
+Por padrão, a agenda usa `CALENDAR_BACKEND=internal`: os eventos ficam no SQLite do bot, entram no RAG, aparecem em `/today`, `/calendar`, `/events` e enviam alerta para o chat do Telegram conforme `/meeting_reminders minutes <n>`. Para reativar o Google Calendar depois, use `CALENDAR_BACKEND=google`; para manter agenda interna e também preparar evento no Google, use `CALENDAR_BACKEND=both`.
 
 ### E-mails inteligentes
 

@@ -15,9 +15,10 @@ from telegram import Update
 from bot.db import is_authorized_user_active, observe_authorized_user, upsert_authorized_user
 from bot.handlers import (
     start_command, help_command, handle_message,
-    add_task_command, list_tasks_command, complete_task_command,
+    add_task_command, list_tasks_command, list_task_reminders_command, complete_task_command,
+    edit_task_command, delete_task_command,
     today_command, daily_command, event_command, events_command, confirm_event_command, cancel_event_command,
-    reminders_command,
+    meeting_reminders_command,
     search_command, app_status_command,
     handle_photo, handle_audio,
     gmail_command, drive_command, calendar_command, docs_command,
@@ -104,10 +105,18 @@ def build_application():
     app.add_handler(CommandHandler("reminder", add_task_command))
     app.add_handler(CommandHandler("tasks", list_tasks_command))
     app.add_handler(CommandHandler("list", list_tasks_command))
+    app.add_handler(CommandHandler("reminders", list_task_reminders_command))
+    app.add_handler(CommandHandler("lembretes", list_task_reminders_command))
     app.add_handler(CommandHandler("done", complete_task_command))
+    app.add_handler(CommandHandler("task_done", complete_task_command))
+    app.add_handler(CommandHandler("task_edit", edit_task_command))
+    app.add_handler(CommandHandler("edit_task", edit_task_command))
+    app.add_handler(CommandHandler("task_delete", delete_task_command))
+    app.add_handler(CommandHandler("delete_task", delete_task_command))
     app.add_handler(CommandHandler("today", today_command))
     app.add_handler(CommandHandler("daily", daily_command))
-    app.add_handler(CommandHandler("reminders", reminders_command))
+    app.add_handler(CommandHandler("meeting_reminders", meeting_reminders_command))
+    app.add_handler(CommandHandler("meeting_reminder", meeting_reminders_command))
     app.add_handler(CommandHandler("event", event_command))
     app.add_handler(CommandHandler("events", events_command))
     app.add_handler(CommandHandler("agenda", events_command))
