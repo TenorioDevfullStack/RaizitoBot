@@ -651,7 +651,7 @@ def add_task(
     conn.close()
     return task_id
 
-def get_tasks(user_id, pending_only=True, task_filter="pending", category=None):
+def get_tasks(user_id, pending_only=True, task_filter="pending", category=None, require_reminder=False):
     conn = _connect()
     c = conn.cursor()
     query = """
@@ -680,6 +680,9 @@ def get_tasks(user_id, pending_only=True, task_filter="pending", category=None):
             task for task in tasks
             if (task.get("category") or "").lower() == category.lower()
         ]
+
+    if require_reminder:
+        tasks = [task for task in tasks if task.get("reminder_at")]
 
     if normalized_filter in {"today", "hoje"}:
         tasks = [
@@ -714,25 +717,6 @@ def get_tasks(user_id, pending_only=True, task_filter="pending", category=None):
 
     tasks.sort(key=_task_sort_key)
     return tasks
-
-
-def get_task(task_id, user_id):
-    conn = _connect()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT
-            id, user_id, title, description, due_date, is_completed, created_at,
-            priority, category, reminder_at, recurrence, completed_at, updated_at,
-            last_reminded_at, due_time
-        FROM tasks
-        WHERE id = ? AND user_id = ?
-        """,
-        (task_id, user_id),
-    )
-    row = c.fetchone()
-    conn.close()
-    return _row_to_task(row) if row else None
 
 
 def update_task(task_id, user_id, **updates):
@@ -823,45 +807,6 @@ def delete_task(task_id, user_id):
     conn.commit()
     conn.close()
     return task
-
-def complete_task(task_id, user_id):
-    conn = _connect()
-    c = conn.cursor()
-    completed_at = datetime.utcnow().isoformat()
-    c.execute(
-        """
-        UPDATE tasks
-        SET is_completed = 1, completed_at = ?, updated_at = ?
-        WHERE id = ? AND user_id = ?
-        """,
-        (completed_at, completed_at, task_id, user_id),
-    )
-    rows_affected = c.rowcount
-    if rows_affected:
-        c.execute(
-            """
-            SELECT
-                id, user_id, title, description, due_date, is_completed, created_at,
-                priority, category, reminder_at, recurrence, completed_at, updated_at,
-                last_reminded_at, due_time
-            FROM tasks
-            WHERE id = ? AND user_id = ?
-            """,
-            (task_id, user_id),
-        )
-        task = _row_to_task(c.fetchone())
-        _upsert_knowledge_item(
-            c,
-            user_id,
-            "task",
-            task_id,
-            task["title"],
-            _task_knowledge_content(task),
-            metadata={"task_id": task_id},
-        )
-    conn.commit()
-    conn.close()
-    return rows_affected > 0
 
 
 def complete_task_with_recurrence(task_id, user_id):

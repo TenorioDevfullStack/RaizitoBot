@@ -393,6 +393,7 @@ def _parse_task_filter_and_category(text):
     lowered = text.lower()
     task_filter = "pending"
     category = None
+    require_reminder = bool(re.search(r"\b(lembretes?|reminders?)\b", lowered))
 
     for raw in re.findall(r"#([\wÀ-ÿ-]+)|\b(?:categoria|cat)[:=]\s*([\wÀ-ÿ-]+)", text, re.IGNORECASE):
         category = (raw[0] or raw[1]).lower()
@@ -407,7 +408,10 @@ def _parse_task_filter_and_category(text):
     if re.search(r"\b(concluidas|concluídas|finalizadas|feitas)\b", lowered):
         task_filter = "completed"
 
-    return task_filter, category
+    if re.search(r"\b(tarefas?|tasks?)\s+com\s+(?:lembrete|alerta|aviso)\b", lowered):
+        require_reminder = True
+
+    return task_filter, category, require_reminder
 
 
 def _is_task_list_request(text):
@@ -838,6 +842,15 @@ def _format_tasks(tasks, title="Tarefas"):
     lines = [f"{title}:"]
     lines.extend(_format_task_line(task) for task in tasks)
     return "\n".join(lines)
+
+
+def _task_list_title(task_filter="pending", category=None, require_reminder=False):
+    title = "Lembretes" if require_reminder else "Tarefas"
+    if task_filter != "pending":
+        title += f" ({task_filter})"
+    if category:
+        title += f" #{category}"
+    return title
 
 
 def _task_created_message(task_id, payload):
@@ -1400,6 +1413,16 @@ async def _create_task_from_text(update, user_id, text):
     await update.message.reply_text(_task_created_message(task_id, payload))
 
 
+async def _reply_with_tasks(update, user_id, task_filter="pending", category=None, require_reminder=False):
+    tasks = get_tasks(
+        user_id,
+        task_filter=task_filter,
+        category=category,
+        require_reminder=require_reminder,
+    )
+    await update.message.reply_text(_format_tasks(tasks, _task_list_title(task_filter, category, require_reminder)))
+
+
 async def _edit_task_from_text(update, user_id, task_id, update_text, full_text=None, prefix=""):
     if not update_text and not full_text:
         await update.message.reply_text(
@@ -1528,13 +1551,8 @@ async def _handle_structured_instruction(update, user_id, chat_id, text):
         return True
 
     if _is_task_list_request(text):
-        task_filter, category = _parse_task_filter_and_category(text)
-        title = "Tarefas"
-        if task_filter != "pending":
-            title += f" ({task_filter})"
-        if category:
-            title += f" #{category}"
-        await update.message.reply_text(_format_tasks(get_tasks(user_id, task_filter=task_filter, category=category), title))
+        task_filter, category, require_reminder = _parse_task_filter_and_category(text)
+        await _reply_with_tasks(update, user_id, task_filter, category, require_reminder)
         return True
 
     task_update = _extract_task_update_request(text)
@@ -2026,12 +2044,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /task <text> - Add a task. Ex: /task pagar boleto amanha as 9 #casa prioridade:alta
 /remind <text> - Add a reminder. Ex: /remind tomar remedio em 30 minutos
 /list [hoje|semana|atrasadas|concluidas|todas] [#categoria] - List tasks
+/reminders [hoje|semana|atrasadas|concluidas|todas] [#categoria] - List task reminders
 /done <id> - Mark a task as completed
 /task_edit <id> <alteracoes> - Edit title, due date, time, priority, category, recurrence or reminder
 /task_delete <id> - Delete a task/reminder
 /today - Daily briefing with agenda, tasks and context
 /daily [on HH:MM|off|status] - Configure automatic daily briefing
-/reminders [on|off|minutes <n>|status] - Configure meeting reminders
+/meeting_reminders [on|off|minutes <n>|status] - Configure meeting reminders
 /event <text> - Create an internal agenda event, or Google event when enabled
 /events [hoje|semana|proximos|todas|cancelados] - List internal agenda events
 /agenda [hoje|semana|proximos|todas|cancelados] - Alias for /events
@@ -2187,14 +2206,32 @@ async def list_tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         elif lowered.startswith("categoria:"):
             category = lowered.split(":", 1)[1]
 
-    tasks = get_tasks(user_id, task_filter=task_filter, category=category)
-    title = "Tarefas"
-    if task_filter != "pending":
-        title += f" ({task_filter})"
-    if category:
-        title += f" #{category}"
+    await _reply_with_tasks(update, user_id, task_filter, category)
 
-    await update.message.reply_text(_format_tasks(tasks, title))
+
+async def list_task_reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    upsert_user_settings(user_id, chat_id=update.effective_chat.id)
+    task_filter = "pending"
+    category = None
+
+    if context.args and context.args[0].lower() in {"on", "off", "minutes", "minutos", "status"}:
+        await update.message.reply_text(
+            "Para avisos de reuniao use /meeting_reminders. Para lembretes internos, use /reminders ou edite por ID."
+        )
+        return
+
+    for arg in context.args:
+        lowered = arg.lower()
+        if lowered in TASK_FILTER_ALIASES:
+            task_filter = TASK_FILTER_ALIASES[lowered]
+        elif lowered.startswith("#"):
+            category = lowered[1:]
+        elif lowered.startswith("categoria:"):
+            category = lowered.split(":", 1)[1]
+
+    await _reply_with_tasks(update, user_id, task_filter, category, require_reminder=True)
+
 
 async def complete_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2302,7 +2339,7 @@ async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Uso: /daily on HH:MM, /daily off ou /daily status")
 
 
-async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def meeting_reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     upsert_user_settings(user_id, chat_id=chat_id)
@@ -2329,7 +2366,7 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action in {"minutes", "minutos", "antecedencia", "antecedência"}:
         if len(context.args) < 2:
-            await update.message.reply_text("Uso: /reminders minutes <5-120>")
+            await update.message.reply_text("Uso: /meeting_reminders minutes <5-120>")
             return
         try:
             minutes = int(context.args[1])
@@ -2348,7 +2385,7 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Avisos configurados para {minutes} minuto(s) antes.")
         return
 
-    await update.message.reply_text("Uso: /reminders on, /reminders off, /reminders minutes <n> ou /reminders status")
+    await update.message.reply_text("Uso: /meeting_reminders on, /meeting_reminders off, /meeting_reminders minutes <n> ou /meeting_reminders status")
 
 
 async def events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
