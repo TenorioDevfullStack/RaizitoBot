@@ -16,6 +16,7 @@ from bot.db import is_authorized_user_active, observe_authorized_user, upsert_au
 from bot.handlers import (
     start_command, help_command, handle_message,
     add_task_command, list_tasks_command, complete_task_command,
+    edit_task_command, delete_task_command,
     today_command, daily_command, event_command, events_command, confirm_event_command, cancel_event_command,
     reminders_command,
     search_command, app_status_command,
@@ -105,6 +106,11 @@ def build_application():
     app.add_handler(CommandHandler("tasks", list_tasks_command))
     app.add_handler(CommandHandler("list", list_tasks_command))
     app.add_handler(CommandHandler("done", complete_task_command))
+    app.add_handler(CommandHandler("task_done", complete_task_command))
+    app.add_handler(CommandHandler("task_edit", edit_task_command))
+    app.add_handler(CommandHandler("edit_task", edit_task_command))
+    app.add_handler(CommandHandler("task_delete", delete_task_command))
+    app.add_handler(CommandHandler("delete_task", delete_task_command))
     app.add_handler(CommandHandler("today", today_command))
     app.add_handler(CommandHandler("daily", daily_command))
     app.add_handler(CommandHandler("reminders", reminders_command))

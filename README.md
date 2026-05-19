@@ -114,6 +114,11 @@ Observação: SQLite local em serverless pode ser temporário. Para lembretes re
 | `/list [filtro] [#categoria]` | Lista tarefas. Filtros: `hoje`, `semana`, `atrasadas`, `concluidas`, `todas` |
 | `/tasks [filtro] [#categoria]` | Atalho para listar tarefas |
 | `/done <id>` | Marca uma tarefa como concluída |
+| `/task_done <id>` | Atalho para marcar tarefa como concluída |
+| `/task_edit <id> <alterações>` | Edita título, prazo, horário, prioridade, categoria, recorrência ou lembrete |
+| `/edit_task <id> <alterações>` | Atalho para editar tarefa |
+| `/task_delete <id>` | Exclui uma tarefa ou lembrete interno |
+| `/delete_task <id>` | Atalho para excluir tarefa |
 | `/today` | Mostra briefing do dia com agenda, tarefas, prioridades e contexto |
 | `/daily on HH:MM` | Ativa resumo diário automático |
 | `/daily off` | Desativa resumo diário |
@@ -166,6 +171,7 @@ Além dos comandos, você pode:
 - 💬 Enviar mensagens de texto para conversar com a IA (com contexto das últimas interações)
 - 📝 Criar tarefas em linguagem natural, como `me lembre de pagar boleto amanhã às 9 #casa prioridade:alta`
 - ⏰ Criar lembretes em linguagem natural, como `crie um lembrete para tomar remédio em 30 minutos` ou `me lembra de alongar em alguns minutos`
+- ✅ Gerenciar tarefas por texto, como `listar tarefas de hoje`, `concluir tarefa 12`, `alterar tarefa 12 para revisar proposta amanhã às 10 prioridade:alta` ou `excluir tarefa 12`
 - 🗓️ Criar eventos por texto ou áudio, como `crie uma reunião com Ana amanhã às 15h por 45min local: Meet`
 - 🖼️ Enviar fotos para análise
 - 🎙️ Enviar áudios/voice notes para transcrição e execução de instruções de agenda/lembrete
