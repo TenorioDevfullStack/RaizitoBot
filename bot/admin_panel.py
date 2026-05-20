@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 STARTED_AT = datetime.utcnow()
 LOG_RECORDS = deque(maxlen=300)
 _LOG_HANDLER_INSTALLED = False
+SESSIONS = {} # session_id -> { "last_seen": datetime }
+CSRF_TOKENS = {} # session_id -> csrf_token
 
 
 class InMemoryLogHandler(logging.Handler):
@@ -320,10 +322,37 @@ class AdminPanelHandler(BaseHTTPRequestHandler):
     def _require_auth(self):
         if self.path.startswith("/login"):
             return True
-        if self._authenticated():
+        
+        session_id = self._get_session_id()
+        if session_id in SESSIONS:
+            SESSIONS[session_id]["last_seen"] = datetime.utcnow()
             return True
+            
         self._send(401, _login_page("Informe o token administrativo."))
         return False
+
+    def _get_session_id(self):
+        raw_cookie = self.headers.get("Cookie", "")
+        parsed = cookies.SimpleCookie()
+        try:
+            parsed.load(raw_cookie)
+        except cookies.CookieError:
+            return None
+        morsel = parsed.get("session_id")
+        return unquote(morsel.value) if morsel else None
+
+    def _get_csrf_token(self, session_id):
+        if not session_id: return None
+        if session_id not in CSRF_TOKENS:
+            CSRF_TOKENS[session_id] = secrets.token_urlsafe(32)
+        return CSRF_TOKENS[session_id]
+
+    def _verify_csrf(self, form):
+        session_id = self._get_session_id()
+        if not session_id: return False
+        expected = CSRF_TOKENS.get(session_id)
+        provided = form.get("csrf_token")
+        return expected and provided and secrets.compare_digest(expected, provided)
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -332,6 +361,11 @@ class AdminPanelHandler(BaseHTTPRequestHandler):
             return
         if not self._require_auth():
             return
+
+        # Add CSRF token to relevant pages
+        session_id = self._get_session_id()
+        csrf_token = self._get_csrf_token(session_id)
+        self.csrf_token = csrf_token # Store for renderers
 
         routes = {
             "/": self._render_status,
@@ -355,20 +389,29 @@ class AdminPanelHandler(BaseHTTPRequestHandler):
         if parsed.path == "/login":
             form = self._read_form()
             if secrets.compare_digest(form.get("token", ""), self._token()):
+                session_id = secrets.token_urlsafe(32)
+                SESSIONS[session_id] = {"last_seen": datetime.utcnow()}
                 self._redirect(
                     "/",
-                    headers={"Set-Cookie": f"admin_token={quote(self._token(), safe='')}; HttpOnly; SameSite=Lax; Path=/"},
+                    headers={"Set-Cookie": f"session_id={session_id}; HttpOnly; SameSite=Strict; Path=/"},
                 )
                 return
             self._send(401, _login_page("Token invalido."))
             return
+        
         if not self._require_auth():
             return
+            
+        form = self._read_form()
+        if not self._verify_csrf(form):
+            self._send(403, _page("Erro de Seguranca", "status", "<section><h2 class='bad'>Token CSRF invalido ou ausente</h2><p>Por seguranca, sua acao foi bloqueada.</p></section>"))
+            return
+
         if parsed.path == "/users":
-            self._save_user()
+            self._save_user(form)
             return
         if parsed.path == "/settings":
-            self._save_settings()
+            self._save_settings(form)
             return
         if parsed.path == "/backup":
             create_database_backup(os.getenv("ADMIN_PANEL_BACKUP_DIR", "data/backups"))
@@ -449,6 +492,7 @@ class AdminPanelHandler(BaseHTTPRequestHandler):
 <section>
   <h2>Usuarios autorizados</h2>
   <form method="post" action="/users" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{self.csrf_token}">
     <div><label>User ID</label><input name="user_id" required></div>
     <div><label>Username</label><input name="username"></div>
     <div><label>Nome</label><input name="full_name"></div>
@@ -479,6 +523,7 @@ class AdminPanelHandler(BaseHTTPRequestHandler):
 <section>
   <h2>Configuracoes por usuario</h2>
   <form method="post" action="/settings" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{self.csrf_token}">
     <div><label>User ID</label><input name="user_id" required></div>
     <div><label>Chat ID</label><input name="chat_id"></div>
     <div><label>Resumo diario</label><select name="daily_summary_enabled"><option value="">Manter</option><option value="1">Ativo</option><option value="0">Off</option></select></div>
@@ -508,6 +553,7 @@ class AdminPanelHandler(BaseHTTPRequestHandler):
 <section>
   <h2>Backup do banco</h2>
   <form method="post" action="/backup">
+    <input type="hidden" name="csrf_token" value="{self.csrf_token}">
     <button type="submit">Criar backup agora</button>
   </form>
 </section>
