@@ -149,3 +149,29 @@ def transcribe_audio(audio_file_path):
         return _request_gemini(contents)
     except OSError as e:
         return f"Error transcribing audio: {str(e)}"
+
+def get_gemini_embedding(text, model="text-embedding-004"):
+    """
+    Generate semantic embedding for a given text using Gemini.
+    """
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY is missing.")
+
+    url = f"{GEMINI_API_BASE}/models/{model}:embedContent"
+    payload = {
+        "model": f"models/{model}",
+        "content": {"parts": [{"text": text}]}
+    }
+
+    try:
+        response = requests.post(
+            url,
+            params={"key": GEMINI_API_KEY},
+            json=payload,
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json().get("embedding", {}).get("values", [])
+    except Exception as e:
+        print(f"Error generating embedding: {e}")
+        return []

@@ -57,6 +57,14 @@ from bot.rag import chunk_text
 from bot.time_utils import app_timezone, app_timezone_name, local_date, local_now, parse_local_datetime
 from bot.web_search import google_search
 from bot.external_integration import external_client
+from bot.managers import task_manager, event_manager, mission_manager
+from bot.managers.common_utils import (
+    _parse_due_date,
+    _calendar_backend,
+    _calendar_uses_internal,
+    _calendar_uses_google,
+)
+from bot.external_integration import external_client
 from bot.google_services import (
     create_calendar_event,
     format_calendar_events,
@@ -362,128 +370,16 @@ def _extract_memory_text(text):
     return None
 
 
-def _extract_task_text(text):
-    stripped = text.strip()
-    lowered = stripped.lower()
-    for prefix in TASK_PREFIXES:
-        if lowered.startswith(prefix):
-            return stripped[len(prefix):].strip()
-
-    polite_match = re.match(
-        r"^(?:por favor,\s*)?(?:raizito,\s*)?"
-        r"(?:cria|crie|criar|adiciona|adicione|adicionar|configura|configure)\s+"
-        r"(?:um\s+)?lembrete\s+(?:para|de)?\s*(.+)$",
-        stripped,
-        flags=re.IGNORECASE,
-    )
-    if polite_match:
-        return polite_match.group(1).strip()
-
-    reminder_match = re.match(
-        r"^(?:por favor,\s*)?(?:raizito,\s*)?"
-        r"(?:me\s+lembra|me\s+lembre|lembra-me|lembre-me|me\s+avisa|me\s+avise|avisa-me|avise-me)\s+"
-        r"(?:(?:de|para|pra)\s+)?(.+)$",
-        stripped,
-        flags=re.IGNORECASE,
-    )
-    if reminder_match:
-        return reminder_match.group(1).strip()
-    return None
-
-
-def _extract_task_id_match(text):
-    return re.search(r"\b(?:tarefa|tarefas|lembrete|lembretes)\s*#?(\d+)\b|#(\d+)\b", text, re.IGNORECASE)
-
-
-def _extract_task_id(text):
-    match = _extract_task_id_match(text)
-    if not match:
-        return None
-    return int(match.group(1) or match.group(2))
-
-
-def _parse_task_filter_and_category(text):
-    lowered = text.lower()
-    task_filter = "pending"
-    category = None
-    require_reminder = bool(re.search(r"\b(lembretes?|reminders?)\b", lowered))
-
-    for raw in re.findall(r"#([\wÀ-ÿ-]+)|\b(?:categoria|cat)[:=]\s*([\wÀ-ÿ-]+)", text, re.IGNORECASE):
-        category = (raw[0] or raw[1]).lower()
-
-    for alias, normalized in TASK_FILTER_ALIASES.items():
-        if re.search(rf"\b{re.escape(alias)}\b", lowered):
-            task_filter = normalized
-            break
-
-    if re.search(r"\b(pendentes?|abertas?|a fazer)\b", lowered):
-        task_filter = "pending"
-    if re.search(r"\b(concluidas|concluídas|finalizadas|feitas)\b", lowered):
-        task_filter = "completed"
-
-    if re.search(r"\b(tarefas?|tasks?)\s+com\s+(?:lembrete|alerta|aviso)\b", lowered):
-        require_reminder = True
-
-    return task_filter, category, require_reminder
-
-
-def _is_task_list_request(text):
-    lowered = text.strip().lower()
-    if lowered in {"minhas tarefas", "meus lembretes", "tarefas", "lembretes"}:
-        return True
-    if re.search(r"\bo que (?:eu )?tenho (?:para|pra) fazer\b", lowered):
-        return True
-    if not re.search(r"\b(tarefas?|lembretes?)\b", lowered):
-        return False
-    return bool(re.match(
-        r"^(?:por favor,\s*)?(?:raizito,\s*)?"
-        r"(?:lista|listar|liste|mostra|mostrar|mostre|ver|veja|quais|consultar|consulta)\b",
-        lowered,
-    ))
-
-
-def _is_task_complete_request(text):
-    lowered = text.lower()
-    if not _extract_task_id(lowered) or not re.search(r"\b(tarefas?|lembretes?)\b", lowered):
-        return False
-    return bool(re.search(
-        r"\b(concluir|conclua|concluido|concluida|concluído|concluída|complete|completar|feito|feita|"
-        r"finalizar|finalize|finalizada|terminar|terminei|marcar|marque|dar baixa)\b",
-        lowered,
-    ))
-
-
-def _is_task_delete_request(text):
-    lowered = text.lower()
-    if not _extract_task_id(lowered) or not re.search(r"\b(tarefas?|lembretes?)\b", lowered):
-        return False
-    return bool(re.search(
-        r"\b(excluir|exclua|apagar|apague|deletar|delete|remover|remova|cancelar|cancele)\b",
-        lowered,
-    ))
-
-
-def _extract_task_update_request(text):
-    match = _extract_task_id_match(text)
-    if not match:
-        return None
-
-    lowered = text.lower()
-    if not re.search(r"\b(editar|edite|alterar|altere|mudar|mude|atualizar|atualize|renomear|renomeie|modificar|modifique)\b", lowered):
-        return None
-    if not re.search(r"\b(tarefas?|lembretes?)\b", lowered):
-        return None
-
-    update_text = text[match.end():].strip()
-    update_text = re.sub(r"^(?:para|pra|como|com|:|-|,)\s+", "", update_text, flags=re.IGNORECASE).strip()
-    prefix = text[:match.start()]
-    return {
-        "task_id": int(match.group(1) or match.group(2)),
-        "update_text": update_text,
-        "prefix": prefix,
-        "full_text": text,
-    }
-
+# --- Shared NLP Utilities ---
+from bot.managers.task_manager import (
+    _extract_task_text,
+    _extract_task_id,
+    _parse_task_filter_and_category,
+    _is_task_list_request,
+    _is_task_complete_request,
+    _is_task_delete_request,
+    _extract_task_update_request,
+)
 
 def _extract_event_text(text):
     stripped = text.strip()
@@ -511,531 +407,15 @@ def _extract_event_text(text):
         return f"{noun} {polite_match.group(2).strip()}".strip()
     return None
 
-
 def _extract_mission_goal(text):
-    stripped = text.strip()
-    lowered = stripped.lower()
-    for prefix in MISSION_PREFIXES:
-        if lowered.startswith(prefix):
-            return stripped[len(prefix):].strip()
-    return None
-
-
-def _calendar_backend():
-    backend = (os.getenv("CALENDAR_BACKEND") or "internal").strip().lower()
-    aliases = {
-        "local": "internal",
-        "interno": "internal",
-        "agenda_interna": "internal",
-        "calendar": "google",
-        "google_calendar": "google",
-        "gcal": "google",
-        "ambos": "both",
-    }
-    return aliases.get(backend, backend if backend in {"internal", "google", "both"} else "internal")
-
-
-def _calendar_uses_internal():
-    return _calendar_backend() in {"internal", "both"}
-
-
-def _calendar_uses_google():
-    return _calendar_backend() in {"google", "both"}
-
-
-def _parse_relative_amount(raw_amount, unit):
-    value = raw_amount.strip().lower()
-    if value.isdigit():
-        return int(value)
-    if value in {"um", "uma"}:
-        return 1
-    if unit.startswith("h"):
-        return 2
-    return 5
-
-
-def _next_weekday(target_weekday):
-    today = local_date()
-    days_ahead = (target_weekday - today.weekday()) % 7
-    if days_ahead == 0:
-        days_ahead = 7
-    return today + timedelta(days=days_ahead)
-
-
-def _parse_due_date(text):
-    lowered = text.lower()
-    today = local_date()
-
-    if re.search(r"\b(hoje)\b", lowered):
-        return today
-    if re.search(r"\b(depois de amanha|depois de amanhã)\b", lowered):
-        return today + timedelta(days=2)
-    if re.search(r"\b(amanha|amanhã)\b", lowered):
-        return today + timedelta(days=1)
-
-    days_match = re.search(rf"\b(?:em|daqui\s+a?)\s+({RELATIVE_AMOUNT_PATTERN})\s+dias?\b", lowered)
-    if days_match:
-        return today + timedelta(days=_parse_relative_amount(days_match.group(1), "dias"))
-
-    date_match = re.search(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b", lowered)
-    if date_match:
-        day = int(date_match.group(1))
-        month = int(date_match.group(2))
-        year_text = date_match.group(3)
-        year = int(year_text) if year_text else today.year
-        if year < 100:
-            year += 2000
-        try:
-            due = date(year, month, day)
-        except ValueError:
-            return None
-        if not year_text and due < today:
-            due = date(today.year + 1, month, day)
-        return due
-
-    for name, weekday in WEEKDAYS.items():
-        if re.search(rf"\b{name}\b", lowered):
-            return _next_weekday(weekday)
-
-    return None
-
-
-def _parse_due_time(text):
-    lowered = text.lower()
-    lowered = re.sub(
-        rf"\b(?:em|daqui\s+a?)\s+(?:{RELATIVE_AMOUNT_PATTERN})\s*(?:minutos?|min|horas?|h)\b",
-        " ",
-        lowered,
-    )
-    if re.search(r"\b(meio dia|meio-dia)\b", lowered):
-        return time(12, 0)
-    if re.search(r"\b(meia noite|meia-noite)\b", lowered):
-        return time(0, 0)
-
-    time_match = re.search(r"\b(?:as|às|a|@)\s*(\d{1,2})(?:[:h](\d{0,2}))?\b", lowered)
-    if not time_match:
-        time_match = re.search(r"\b(\d{1,2})h(\d{2})?\b", lowered)
-    if not time_match:
-        time_match = re.search(r"\b(\d{1,2})\s*horas?\b", lowered)
-    if not time_match:
-        return None
-
-    hour = int(time_match.group(1))
-    minute = int(time_match.group(2) or 0)
-    suffix = lowered[time_match.end():time_match.end() + 20]
-    if hour <= 11 and re.search(r"\b(da tarde|tarde|da noite|noite)\b", suffix):
-        hour += 12
-    if hour == 12 and re.search(r"\b(da madrugada|madrugada|da manha|da manhã)\b", suffix):
-        hour = 0
-    if hour > 23 or minute > 59:
-        return None
-    return time(hour, minute)
-
-
-def _parse_priority(text):
-    lowered = text.lower()
-    if re.search(r"(!alta|\balta\b|\burgente\b|\bprioridade[:=]\s*alta\b|\bp1\b)", lowered):
-        return "alta"
-    if re.search(r"(\bmedia\b|\bmédia\b|\bprioridade[:=]\s*(media|média)\b|\bp2\b)", lowered):
-        return "media"
-    if re.search(r"(\bbaixa\b|\bprioridade[:=]\s*baixa\b|\bp3\b)", lowered):
-        return "baixa"
-    if re.search(r"\bprioridade[:=]?\s*normal\b|\bnormal\b", lowered):
-        return "normal"
-    return "normal"
-
-
-def _mentions_priority(text):
-    return bool(re.search(
-        r"\b(prioridade|p1|p2|p3|urgente|alta|media|média|normal|baixa)\b",
-        text.lower(),
-    ))
-
-
-def _parse_category(text):
-    tag_match = re.search(r"(?:^|\s)#([\wÀ-ÿ-]+)", text)
-    if tag_match:
-        return tag_match.group(1).lower()
-
-    category_match = re.search(r"\b(?:categoria|cat)[:=]\s*([\wÀ-ÿ-]+)", text, re.IGNORECASE)
-    if category_match:
-        return category_match.group(1).lower()
-    return None
-
-
-def _parse_recurrence(text):
-    lowered = text.lower()
-    if re.search(r"\b(todo dia|todos os dias|diaria|diária|diariamente)\b", lowered):
-        return "diaria"
-    if re.search(r"\b(toda semana|semanal|semanalmente)\b", lowered):
-        return "semanal"
-    if re.search(r"\b(todo mes|todo mês|mensal|mensalmente)\b", lowered):
-        return "mensal"
-    return None
-
-
-def _parse_reminder_at(text, due_date, due_time):
-    lowered = text.lower()
-    now = local_now()
-
-    relative_match = re.search(
-        rf"\b(?:lembrete|lembrar|avisar|me\s+lembre|me\s+lembra|lembre-me|lembra-me)?\s*"
-        rf"(?:em|daqui\s+a?)\s+({RELATIVE_AMOUNT_PATTERN})\s*(minutos?|min|horas?|h)\b",
-        lowered,
-    )
-    if not relative_match:
-        relative_match = re.search(
-            rf"\b({RELATIVE_AMOUNT_PATTERN})\s*(minutos?|min|horas?|h)\s+"
-            r"(?:a partir de agora|de agora)\b",
-            lowered,
-        )
-    if relative_match:
-        amount = _parse_relative_amount(relative_match.group(1), relative_match.group(2))
-        unit = relative_match.group(2)
-        delta = timedelta(hours=amount) if unit.startswith("h") else timedelta(minutes=amount)
-        return (now + delta).isoformat(timespec="minutes")
-
-    if due_date and due_time:
-        return datetime.combine(due_date, due_time, tzinfo=app_timezone()).isoformat(timespec="minutes")
-
-    if due_date and re.search(r"\b(lembrete|lembrar|me lembre|lembre-me)\b", lowered):
-        return datetime.combine(due_date, time(9, 0), tzinfo=app_timezone()).isoformat(timespec="minutes")
-
-    return None
-
-
-def _task_title_cleanup_patterns():
-    return [
-        r"\b(?:prioridade|cat|categoria)[:=]\s*[\wÀ-ÿ-]+\b",
-        r"(?:^|\s)#[\wÀ-ÿ-]+",
-        r"\b(!alta|p1|p2|p3|urgente|prioridade alta|prioridade media|prioridade média|prioridade baixa)\b",
-        r"\b(todo dia|todos os dias|diaria|diária|diariamente|toda semana|semanal|semanalmente|todo mes|todo mês|mensal|mensalmente)\b",
-        r"\b(hoje|amanha|amanhã|depois de amanha|depois de amanhã)\b",
-        rf"\b(?:em|daqui\s+a?)\s+(?:{RELATIVE_AMOUNT_PATTERN})\s+dias?\b",
-        rf"\b(?:lembrete|lembrar|avisar|me\s+lembre|me\s+lembra|lembre-me|lembra-me)?\s*"
-        rf"(?:em|daqui\s+a?)\s+(?:{RELATIVE_AMOUNT_PATTERN})\s*(?:minutos?|min|horas?|h)\b",
-        rf"\b(?:{RELATIVE_AMOUNT_PATTERN})\s*(?:minutos?|min|horas?|h)\s+"
-        r"(?:a partir de agora|de agora)\b",
-        r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b",
-        r"\b(?:segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)\b",
-        r"\b(?:as|às|a|@)\s*\d{1,2}(?:[:h]\d{0,2})?\b",
-        r"\b\d{1,2}h\d{0,2}\b",
-        r"\b\d{1,2}\s*horas?\b",
-        r"\b(meio dia|meio-dia|meia noite|meia-noite)\b",
-        r"\b(da tarde|tarde|da noite|noite|da madrugada|madrugada|da manha|da manhã)\b",
-    ]
-
-
-def _strip_task_metadata(text):
-    cleaned = text.strip()
-    cleaned = re.sub(r"^(?:titulo|título|nome|texto|descricao|descrição)\s*:\s*", "", cleaned, flags=re.IGNORECASE)
-    for pattern in _task_title_cleanup_patterns():
-        cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", cleaned).strip(" -,.")
-
-
-def _clean_task_title(text):
-    return _strip_task_metadata(text) or text.strip()
-
-
-def _parse_task_payload(text):
-    due_date = _parse_due_date(text)
-    due_time = _parse_due_time(text)
-    priority = _parse_priority(text)
-    category = _parse_category(text)
-    recurrence = _parse_recurrence(text)
-    reminder_at = _parse_reminder_at(text, due_date, due_time)
-    if reminder_at and not due_date:
-        reminder_dt = parse_local_datetime(reminder_at)
-        if reminder_dt:
-            due_date = reminder_dt.date()
-            due_time = reminder_dt.time().replace(tzinfo=None, second=0, microsecond=0)
-    title = _clean_task_title(text)
-
-    return {
-        "title": title,
-        "due_date": due_date.isoformat() if due_date else None,
-        "due_time": due_time.isoformat(timespec="minutes") if due_time else None,
-        "priority": priority,
-        "category": category,
-        "recurrence": recurrence,
-        "reminder_at": reminder_at,
-    }
-
-
-def _parse_task_update_payload(update_text, full_text=None, prefix=""):
-    source_text = (full_text or update_text).strip()
-    lowered = source_text.lower()
-    update_lowered = (update_text or "").lower()
-    updates = {}
-    payload = _parse_task_payload(update_text or source_text)
-
-    if payload.get("due_date"):
-        updates["due_date"] = payload["due_date"]
-    if payload.get("due_time"):
-        updates["due_time"] = payload["due_time"]
-    if payload.get("reminder_at"):
-        updates["reminder_at"] = payload["reminder_at"]
-    if payload.get("category"):
-        updates["category"] = payload["category"]
-    if payload.get("recurrence"):
-        updates["recurrence"] = payload["recurrence"]
-    if _mentions_priority(source_text):
-        updates["priority"] = payload["priority"]
-
-    if re.search(r"\b(?:sem|remover|remove|tirar|tire|limpar|limpe)\s+(?:prazo|data|vencimento)\b", lowered):
-        updates["due_date"] = None
-        updates["due_time"] = None
-    if re.search(r"\b(?:sem|remover|remove|tirar|tire|limpar|limpe)\s+(?:horario|horário|hora)\b", lowered):
-        updates["due_time"] = None
-    if re.search(r"\b(?:sem|remover|remove|tirar|tire|limpar|limpe)\s+(?:lembrete|alerta|aviso)\b", lowered):
-        updates["reminder_at"] = None
-    if re.search(r"\b(?:sem|remover|remove|tirar|tire|limpar|limpe)\s+(?:categoria|tag)\b", lowered):
-        updates["category"] = None
-    if re.search(r"\b(?:sem|remover|remove|tirar|tire|limpar|limpe)\s+(?:recorrencia|recorrência|repeticao|repetição)\b", lowered):
-        updates["recurrence"] = None
-
-    prefix_has_field = bool(re.search(
-        r"\b(prazo|data|vencimento|horario|horário|hora|prioridade|categoria|tag|lembrete|alerta|aviso|recorrencia|recorrência)\b",
-        prefix.lower(),
-    ))
-    title_marker = bool(re.search(r"\b(titulo|título|nome|texto|descricao|descrição|renomear|renomeie)\b", lowered))
-    title_text = _strip_task_metadata(update_text)
-    title_text = re.sub(
-        r"\b(?:prazo|data|vencimento|horario|horário|hora|prioridade|categoria|tag|lembrete|alerta|aviso|recorrencia|recorrência)\b",
-        " ",
-        title_text,
-        flags=re.IGNORECASE,
-    )
-    title_text = re.sub(r"\s+", " ", title_text).strip(" -,.")
-    title_is_only_priority = title_text.lower() in {"alta", "media", "média", "normal", "baixa", "p1", "p2", "p3"}
-    title_is_clear_directive = bool(re.match(r"^(?:sem|remover|remove|tirar|tire|limpar|limpe)\b", update_lowered))
-    if title_text and not title_is_only_priority and not title_is_clear_directive and (title_marker or not prefix_has_field):
-        updates["title"] = title_text
-
-    return updates
-
-
-def _format_task_due(task):
-    due_date = task.get("due_date")
-    due_time = task.get("due_time")
-    if not due_date:
-        return "Sem prazo"
-
-    try:
-        formatted = date.fromisoformat(due_date).strftime("%d/%m/%Y")
-    except ValueError:
-        formatted = due_date
-
-    if due_time:
-        formatted += f" às {due_time}"
-    return formatted
-
-
-def _format_payload_due(payload):
-    due_date = payload.get("due_date")
-    due_time = payload.get("due_time")
-    if not due_date:
-        return None
-    try:
-        formatted = date.fromisoformat(due_date).strftime("%d/%m/%Y")
-    except ValueError:
-        formatted = due_date
-    if due_time:
-        formatted += f" às {due_time}"
-    return formatted
-
-
-def _format_datetime_value(value):
-    parsed = parse_local_datetime(value)
-    if parsed:
-        return parsed.strftime("%d/%m/%Y às %H:%M")
-    return value
-
-
-def _format_task_reminder(task):
-    reminder_at = task.get("reminder_at")
-    if not reminder_at:
-        return None
-    return _format_datetime_value(reminder_at)
-
-
-def _format_task_priority(task):
-    priority = (task.get("priority") or "normal").lower()
-    return TASK_PRIORITY_LABELS.get(priority, priority.capitalize())
-
-
-def _format_task_status(task):
-    return "✅ Concluída" if task["is_completed"] else "🟡 Pendente"
-
-
-def _format_task_summary_line(task):
-    parts = [
-        f"#{task['id']} {task['title']}",
-        f"📅 {_format_task_due(task)}",
-        f"Prioridade: {_format_task_priority(task)}",
-    ]
-    if task.get("category"):
-        parts.append(f"🏷️ {task['category']}")
-    if task.get("reminder_at"):
-        parts.append(f"⏰ {_format_task_reminder(task)}")
-    return " · ".join(parts)
-
-
-def _format_task_card(task):
-    header_icon = "✅" if task["is_completed"] else ("⏰" if task.get("reminder_at") else "📝")
-    lines = [
-        f"{header_icon} #{task['id']} · {task['title']}",
-        f"   Status: {_format_task_status(task)}",
-        f"   📅 Prazo: {_format_task_due(task)}",
-        f"   🚦 Prioridade: {_format_task_priority(task)}",
-    ]
-    if task.get("category"):
-        lines.append(f"   🏷️ Categoria: {task['category']}")
-    if task.get("recurrence"):
-        recurrence = TASK_RECURRENCE_LABELS.get(task["recurrence"], task["recurrence"])
-        lines.append(f"   🔁 Recorrência: {recurrence}")
-    if task.get("reminder_at"):
-        lines.append(f"   ⏰ Lembrete: {_format_task_reminder(task)}")
-    return "\n".join(lines)
-
-
-def _format_task_line(task):
-    return _format_task_card(task)
-
-
-def _format_tasks(tasks, title="Tarefas"):
-    if not tasks:
-        return f"📭 {title}\nNenhum item encontrado."
-
-    lines = [f"📋 {title} · {len(tasks)} item(ns)"]
-    for task in tasks:
-        lines.append("")
-        lines.append(_format_task_card(task))
-    return "\n".join(lines)
-
-
-def _task_list_title(task_filter="pending", category=None, require_reminder=False):
-    title = "Lembretes" if require_reminder else "Tarefas"
-    if task_filter != "pending":
-        title += f" ({task_filter})"
-    if category:
-        title += f" #{category}"
-    return title
-
-
-def _task_created_message(task_id, payload):
-    details = [
-        f"✅ Tarefa criada",
-        f"🆔 ID: #{task_id}",
-        f"📝 Título: {payload['title']}",
-    ]
-    if payload.get("due_date"):
-        details.append(f"📅 Prazo: {_format_payload_due(payload)}")
-    details.append(f"🚦 Prioridade: {TASK_PRIORITY_LABELS.get(payload['priority'], payload['priority'])}")
-    if payload.get("category"):
-        details.append(f"🏷️ Categoria: {payload['category']}")
-    if payload.get("recurrence"):
-        recurrence = TASK_RECURRENCE_LABELS.get(payload["recurrence"], payload["recurrence"])
-        details.append(f"🔁 Recorrência: {recurrence}")
-    if payload.get("reminder_at"):
-        details.append(f"⏰ Lembrete: {_format_datetime_value(payload['reminder_at'])}")
-    return "\n".join(details)
-
-
-def _parse_duration_minutes(text, default_minutes=60):
-    lowered = text.lower()
-    duration_match = re.search(r"\b(?:por|duracao|duração)\s+(\d{1,3})\s*(minutos?|min|horas?|h)\b", lowered)
-    if not duration_match:
-        return default_minutes
-    amount = int(duration_match.group(1))
-    unit = duration_match.group(2)
-    return amount * 60 if unit.startswith("h") else amount
-
-
-def _parse_event_reminder_minutes(text):
-    lowered = text.lower()
-    reminder_match = re.search(
-        r"\b(?:alerta|avis[oe]|lembrar|lembrete)\s+(?:com\s+)?"
-        r"(\d{1,3})\s*(minutos?|min|horas?|h)\s+(?:antes|de antecedencia|de antecedência)\b",
-        lowered,
-    )
-    if not reminder_match:
-        reminder_match = re.search(
-            r"\b(\d{1,3})\s*(minutos?|min|horas?|h)\s+antes\b",
-            lowered,
-        )
-    if not reminder_match:
-        return None
-    amount = int(reminder_match.group(1))
-    unit = reminder_match.group(2)
-    minutes = amount * 60 if unit.startswith("h") else amount
-    return max(0, min(minutes, 24 * 60))
-
-
-def _extract_event_field(text, names):
-    joined_names = "|".join(re.escape(name) for name in names)
-    pattern = rf"\b(?:{joined_names})\s*:\s*(.+?)(?=\s+\w+\s*:|$)"
-    match = re.search(pattern, text, re.IGNORECASE)
-    return match.group(1).strip(" -,.") if match else None
-
-
-def _parse_event_location(text):
-    return _extract_event_field(text, ("local", "lugar", "onde"))
-
-
-def _parse_event_description(text):
-    description = _extract_event_field(text, ("desc", "descricao", "descrição", "nota", "obs"))
-    if not description:
-        return None
-    return EMAIL_RE.sub(" ", description).strip(" -,.")
-
-
-def _parse_event_attendees(text):
-    return sorted(set(EMAIL_RE.findall(text)))
-
-
-def _clean_event_title(text):
-    cleaned = _clean_task_title(text)
-    cleaned = re.sub(
-        r"\b(?:por|duracao|duração)\s+\d{1,3}\s*(?:minutos?|min|horas?|h)\b",
-        " ",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(r"\b(?:por|duracao|duração)\b\s*$", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(
-        r"\b(?:alerta|avis[oe]|lembrar|lembrete)\s+(?:com\s+)?\d{1,3}\s*"
-        r"(?:minutos?|min|horas?|h)\s+(?:antes|de antecedencia|de antecedência)\b",
-        " ",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(r"\b\d{1,3}\s*(?:minutos?|min|horas?|h)\s+antes\b", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\b(?:local|lugar|onde|desc|descricao|descrição|nota|obs)\s*:\s*.+?(?=\s+\w+\s*:|$)", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = EMAIL_RE.sub(" ", cleaned)
-    return re.sub(r"\s+", " ", cleaned).strip(" -,.") or text.strip()
+    return mission_manager._extract_mission_goal(text)
+# (NLP Parsing logic moved to task_manager.py and event_manager.py)
+# (Event metadata formatting moved to event_manager.py if needed)
+# (NLP Parsing logic moved to task_manager.py and event_manager.py)
 
 
 def _parse_event_payload(text):
-    event_date = _parse_due_date(text)
-    event_time = _parse_due_time(text)
-    if not event_date or not event_time:
-        return None
-
-    duration_minutes = _parse_duration_minutes(text)
-    start_at = datetime.combine(event_date, event_time, tzinfo=app_timezone())
-    end_at = start_at + timedelta(minutes=duration_minutes)
-    return {
-        "summary": _clean_event_title(text),
-        "start_at": start_at,
-        "end_at": end_at,
-        "duration_minutes": duration_minutes,
-        "description": _parse_event_description(text),
-        "location": _parse_event_location(text),
-        "attendees": _parse_event_attendees(text),
-        "reminder_minutes": _parse_event_reminder_minutes(text),
-    }
+    return event_manager._parse_event_payload(text)
 
 
 def _parse_event_datetime(value):
@@ -1469,70 +849,34 @@ async def _create_mission_from_goal(update, user_id, goal):
 
 
 async def _create_task_from_text(update, user_id, text):
-    payload = _parse_task_payload(text)
-    task_id = add_task(
-        user_id,
-        payload["title"],
-        due_date=payload["due_date"],
-        priority=payload["priority"],
-        category=payload["category"],
-        reminder_at=payload["reminder_at"],
-        recurrence=payload["recurrence"],
-        due_time=payload["due_time"],
-    )
-    await update.message.reply_text(_task_created_message(task_id, payload))
-
+    task_id, payload = task_manager.handle_create_task(user_id, text)
+    await update.message.reply_text(task_manager._task_created_message(task_id, payload))
 
 async def _reply_with_tasks(update, user_id, task_filter="pending", category=None, require_reminder=False):
-    tasks = get_tasks(
-        user_id,
-        task_filter=task_filter,
-        category=category,
-        require_reminder=require_reminder,
-    )
-    await update.message.reply_text(_format_tasks(tasks, _task_list_title(task_filter, category, require_reminder)))
-
+    tasks = task_manager.handle_list_tasks(user_id, task_filter=task_filter, category=category, require_reminder=require_reminder)
+    await update.message.reply_text(task_manager.format_tasks(tasks, task_manager._task_list_title(task_filter, category, require_reminder)))
 
 async def _edit_task_from_text(update, user_id, task_id, update_text, full_text=None, prefix=""):
-    if not update_text and not full_text:
-        await update.message.reply_text(
-            "Uso: /task_edit <id> <alteracoes>. Ex: /task_edit 12 revisar proposta amanha as 9 prioridade:alta"
-        )
-        return
-
-    updates = _parse_task_update_payload(update_text, full_text=full_text, prefix=prefix)
-    if not updates:
-        await update.message.reply_text(
-            "Nao entendi o que alterar. Ex: /task_edit 12 prazo amanha as 9, prioridade:alta ou titulo: revisar proposta"
-        )
-        return
-
-    task = update_task(task_id, user_id, **updates)
+    task = task_manager.handle_edit_task(user_id, task_id, update_text)
     if not task:
-        await update.message.reply_text(f"⚠️ Tarefa #{task_id} nao encontrada.")
+        await update.message.reply_text(f"⚠️ Tarefa #{task_id} nao encontrada ou nada para alterar.")
         return
-
-    await update.message.reply_text("✅ Tarefa atualizada\n\n" + _format_task_card(task))
-
+    await update.message.reply_text("✅ Tarefa atualizada\n\n" + task_manager.format_task_card(task))
 
 async def _delete_task_by_id(update, user_id, task_id):
-    task = delete_task(task_id, user_id)
+    task = task_manager.handle_delete_task(user_id, task_id)
     if not task:
         await update.message.reply_text(f"⚠️ Tarefa #{task_id} nao encontrada.")
         return
-
-    await update.message.reply_text(f"🗑️ Tarefa excluida\n🆔 ID: #{task_id}\n📝 {task['title']}")
-
+    await update.message.reply_text(f"\ud83d\uddd1\ufe0f Tarefa excluida\n\ud83c\udd94 ID: #{task_id}\n\ud83d\udcdd {task['title']}")
 
 async def _complete_task_by_id(update, user_id, task_id):
-    result = complete_task_with_recurrence(task_id, user_id)
+    result = task_manager.handle_complete_task(user_id, task_id)
     if result["completed"]:
+        msg = f"✅ Tarefa #{task_id} concluida."
         if result["next_task_id"]:
-            await update.message.reply_text(
-                f"✅ Tarefa #{task_id} concluida.\n🔁 Proxima recorrencia criada: #{result['next_task_id']}."
-            )
-        else:
-            await update.message.reply_text(f"✅ Tarefa #{task_id} concluida.")
+            msg += f"\n🔁 Proxima recorrencia criada: #{result['next_task_id']}."
+        await update.message.reply_text(msg)
     else:
         await update.message.reply_text(f"⚠️ Tarefa #{task_id} nao encontrada.")
 
